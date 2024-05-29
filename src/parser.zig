@@ -28,22 +28,34 @@ pub const Link = struct {
     path: []const u8,
 
     pub fn init(allocator: Allocator, target: []const u8, path: []const u8) !@This() {
-        const target_trimed = try allocator.dupe(u8, std.mem.trim(u8, target, " "));
-        var path_trimed = std.mem.trim(u8, path, " ");
+        // const target_trimed = try allocator.dupe(u8, std.mem.trim(u8, target, " "));
+        // var path_trimed = std.mem.trim(u8, path, " ");
 
-        if (path_trimed[path_trimed.len - 1] == '/') {
-            const target_basename = std.fs.path.basename(target);
-            const buf = try allocator.alloc(u8, path_trimed.len + target_basename.len);
-            path_trimed = try std.fmt.bufPrint(buf, "{s}{s}", .{ path_trimed, target_basename });
-        } else {
-            path_trimed = try allocator.dupe(u8, path_trimed);
-        }
+        // if (path_trimed[path_trimed.len - 1] == '/') {
+        //     const target_basename = std.fs.path.basename(target);
+        //     const buf = try allocator.alloc(u8, path_trimed.len + target_basename.len);
+        //     path_trimed = try std.fmt.bufPrint(buf, "{s}{s}", .{ path_trimed, target_basename });
+        // } else {
+        //     path_trimed = try allocator.dupe(u8, path_trimed);
+        // }
 
         return .{
-            .target = target_trimed,
-            .path = path_trimed,
+            .target = try allocator.dupe(u8, std.mem.trim(u8, target, " ")),
+            .path = try allocator.dupe(u8, std.mem.trim(u8, path, " ")),
         };
     }
+
+    // pub fn initRel(allocator: Allocator, base: []const u8, rel: []const u8, path: []const u8) !Link {
+    //     const buf = try allocator.alloc(u8, abs_path.len + target_basename.len);
+    //     defer allocator.free(buf);
+    //     try std.fmt.bufPrint(buf, "{s}{s}", .{ base, rel });
+
+    //     return Link.init(
+    //         allocator,
+    //         buf,
+    //         path,
+    //     ));
+    // }
 
     pub fn clone(self: @This(), allocator: Allocator) !@This() {
         return @This().init(allocator, self.target, self.path);

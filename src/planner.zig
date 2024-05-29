@@ -5,17 +5,30 @@ const print = std.debug.print;
 const Link = @import("parser.zig").Link;
 const Parser = @import("parser.zig").Parser;
 
+const Error = error{
+    DuplicateManifestEntry,
+};
+
 pub const Manifest = struct {
-    links: std.StringArrayHashMap(Link),
+    // links: std.StringArrayHashMap(Link),
+    links: std.ArrayList(Link),
     allocator: Allocator,
 
     pub fn initLinks(allocator: Allocator, ls: []Link) !@This() {
-        var links = std.StringArrayHashMap(Link).init(allocator);
+        // var links = std.StringArrayHashMap(Link).init(allocator);
+        var links = std.ArrayList(Link).init(allocator);
 
         for (ls) |link| {
             const link_ = try link.clone(allocator);
-            // std.debug.print("{}\n", .{link_});
-            try links.put(link_.path, link_);
+            // try links.put(link_.path, link_);
+
+            // const v = try links.getOrPut(link_.path);
+            // if (v.found_existing) {
+            //     print("Manifest.init error: {}\n", .{link_});
+            //     return Error.DuplicateManifestEntry;
+            // }
+            // v.value_ptr.* = link_;
+            try links.append(link_);
         }
 
         return .{
@@ -26,13 +39,21 @@ pub const Manifest = struct {
 
     pub fn init(allocator: Allocator, p: Parser) !@This() {
         var parser = p;
-        var links = std.StringArrayHashMap(Link).init(allocator);
+        // var links = std.StringArrayHashMap(Link).init(allocator);
+        var links = std.ArrayList(Link).init(allocator);
 
         while (try parser.next(allocator)) |link| {
             const link_ = try link.clone(allocator);
             // std.debug.print("{}", .{link_});
-            try links.put(link_.path, link_);
-            // std.debug.print(" ({d})\n", .{links.count()});
+            // try links.put(link_.path, link_);
+
+            // const v = try links.getOrPut(link_.path);
+            // if (v.found_existing) {
+            //     print("Manifest.init error: {}\n", .{link_});
+            //     return Error.DuplicateManifestEntry;
+            // }
+            // v.value_ptr.* = link_;
+            try links.append(link_);
         }
 
         return .{
@@ -42,9 +63,12 @@ pub const Manifest = struct {
     }
 
     pub fn deinit(self: *@This()) void {
-        var iter = self.links.iterator();
-        while (iter.next()) |entry| {
-            entry.value_ptr.*.deinit(self.allocator);
+        // var iter = self.links.iterator();
+        // while (iter.next()) |entry| {
+        //     entry.value_ptr.*.deinit(self.allocator);
+        // }
+        for (self.links.items) |link| {
+            link.deinit(self.allocator);
         }
         self.links.deinit();
     }
@@ -58,31 +82,20 @@ pub const Manifest = struct {
         _ = try writer.print("{s}", .{@typeName(@This())});
         try writer.writeAll("{\n");
 
-        var iter = self.links.iterator();
-        while (iter.next()) |entry| {
-            const link = entry.value_ptr.*;
+        for (self.links.items) |link| {
+        // var iter = self.links.iterator();
+        // while (iter.next()) |entry| {
+        //     const link = entry.value_ptr.*;
             _ = try writer.print("  {}\n", .{link});
         }
         try writer.writeAll("}");
     }
 
     pub fn eql(self: @This(), other: @This()) bool {
-        if (self.links.count() != other.links.count()) {
-            std.debug.print("Failed on links.count()", .{});
-            return false;
-        }
-        var iter = self.links.iterator();
-        var other_iter = other.links.iterator();
-        while (iter.next()) |entry| {
-            const link = entry.value_ptr.*;
-            if (other_iter.next()) |other_entry| {
-                const other_link = other_entry.value_ptr.*;
-                if (!link.eql(other_link)) {
-                    return false;
-                }
-            } else {
-                return false;
-            }
+        if (self.links.items.len != other.links.items.len) return false;
+        for (self.links.items, 0..) |link, i| {
+            const other_link = other.links.items[i];
+            if (!link.eql(other_link)) return false;
         }
         return true;
     }
@@ -135,6 +148,14 @@ pub const Planner = struct {
     };
 
     pub fn init(allocator: Allocator, current: Manifest, next: Manifest) !@This() {
+        var current_map = std.StringHashMap(Link).init(allocator);
+        defer current_map.deinit();
+        for (current.links.items) |l| try current_map.put(l.path, l);
+
+        // next_map = std.StringHashMap(Link).init(allocator);
+        // defer next_map.deinit();
+        // for (next.links.items) |l| try next_map.put(l.path, l);
+
         var noop = std.ArrayList(Link).init(allocator);
         defer noop.deinit();
 
@@ -150,12 +171,13 @@ pub const Planner = struct {
         var keep = std.StringHashMap(void).init(allocator);
         defer keep.deinit();
 
-        var next_iter = next.links.iterator();
-        while (next_iter.next()) |entry| {
-            const link = entry.value_ptr.*;
+        for (next.links.items) |link| {
+        // var next_iter = next.links.iterator();
+        // while (next_iter.next()) |entry| {
+        //     const link = entry.value_ptr.*;
             try keep.put(link.path, void{});
 
-            if (current.links.get(link.path)) |cur_link| {
+            if (current_map.get(link.path)) |cur_link| {
                 if (std.mem.eql(u8, cur_link.target, link.target)) {
                     try noop.append(try cur_link.clone(allocator));
                 } else {
@@ -171,9 +193,10 @@ pub const Planner = struct {
             }
         }
 
-        var cur_iter = current.links.iterator();
-        while (cur_iter.next()) |entry| {
-            const cur_link = entry.value_ptr.*;
+        for (current.links.items) |cur_link| {
+        // var cur_iter = current.links.iterator();
+        // while (cur_iter.next()) |entry| {
+        //     const cur_link = entry.value_ptr.*;
             if (keep.get(cur_link.path) == null) {
                 try remove.append(try cur_link.clone(allocator));
             }

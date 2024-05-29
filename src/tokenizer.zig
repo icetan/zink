@@ -142,9 +142,7 @@ pub const Tokenizer = struct {
             };
 
             if (tag != .start and self.next_tag != tag) {
-                const token = try self.makeToken(tag, allocator);
-                // std.debug.print("Tokanizer.next() returns: {}\n", .{token});
-                return token;
+                return try self.makeToken(tag, allocator);
             }
         }
         return null;
@@ -191,7 +189,7 @@ test "tokenize simple manifest" {
     for (matrix) |row| {
         if (try tokenizer.next(allocator)) |token| {
             defer token.deinit(allocator);
-            std.debug.print("token={any}\n", .{token});
+            // std.debug.print("token={any}\n", .{token});
             try std.testing.expectEqual(
                 row[0],
                 token.tag,
@@ -257,10 +255,10 @@ test "tokanize other manifest" {
     var tokenizer = try Tokenizer.init(allocator, manifest);
     defer tokenizer.deinit();
 
-    for (matrix, 0..) |row, i| {
+    for (matrix) |row| {
         if (try tokenizer.next(allocator)) |token| {
             defer token.deinit(allocator);
-            std.debug.print("token({d})={any}\n", .{ i, token });
+            // std.debug.print("token({d})={any}\n", .{ i, token });
             try std.testing.expectEqual(
                 row[0],
                 token.tag,

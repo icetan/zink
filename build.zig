@@ -3,14 +3,8 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
-    // const mode = b.standardReleaseOptions();
-
-    // exe.setBuildMode(mode);
-    //exe.addPackagePath("json", "libs/zig-json/src/main.zig");
-    // exe.addPackagePath("glob", "libs/zig-glob/src/main.zig");
 
     const libglob = b.dependency("glob-zig", .{
-        // These are the arguments to the dependency. It expects a target and optimization level.
         .target = target,
         .optimize = optimize,
     });
@@ -21,31 +15,33 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-
-    // my_remote_dep exposes a Zig module we wish to depend on.
     exe.root_module.addImport("glob", libglob.module("glob"));
 
-    // _ = b.createModule("glob", libglob.module("glob"));
-    // b.addImport(libglob.artifact("glob"));
-    // exe.linkLibrary(libglob.artifact("glob"));
     b.installArtifact(exe);
 
     const run_cmd = b.addRunArtifact(exe);
-
     run_cmd.step.dependOn(b.getInstallStep());
     if (b.args) |args| {
         run_cmd.addArgs(args);
     }
-
     const run_step = b.step("run", "Run the app");
     run_step.dependOn(&run_cmd.step);
 
+    // Unit Tests
     const test_step = b.step("test", "Run unit tests");
-    const main_tests = b.addTest(.{
-        .root_source_file = b.path("src/main.zig"),
+    const test_filters = b.option(
+        []const []const u8,
+        "test-filter",
+        "Skip tests that do not match any filter",
+    ) orelse &[0][]const u8{};
+    // std.debug.print("\nfilters: {s}\n", .{test_filters});
+    const unit_tests = b.addTest(.{
+        .root_source_file = b.path("tests.zig"),
         .target = target,
+        .optimize = optimize,
+        .filters = test_filters,
     });
-
-    const run_unit_tests = b.addRunArtifact(main_tests);
+    unit_tests.root_module.addImport("glob", libglob.module("glob"));
+    const run_unit_tests = b.addRunArtifact(unit_tests);
     test_step.dependOn(&run_unit_tests.step);
 }

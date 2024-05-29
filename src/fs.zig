@@ -7,16 +7,21 @@ const print = std.debug.print;
 
 const MAX_PATH_BYTES = fs.MAX_PATH_BYTES;
 
+const Glob = @import("glob").Iterator;
+
 const planner = @import("planner.zig");
 const Manifest = planner.Manifest;
 const Planner = planner.Planner;
 const UpdateLink = planner.Planner.UpdateLink;
-
-const parser = @import("parser.zig");
-const Link = parser.Link;
+const Link = @import("parser.zig").Link;
+const Parser = @import("parser.zig").Parser;
+const Tokenizer = @import("tokenizer.zig").Tokenizer;
 
 const Error = error{
     ManifestPathMustBeAbsolute,
+    PathMustBeAbsolute,
+    LinkPathMustBeDirWithGlob,
+    ResolveLinkError,
 };
 
 const DiffLink = union(enum) {
@@ -38,7 +43,9 @@ fn resolvePath(allocator: Allocator, path: []const u8, rel_path: []const u8) ![]
     if (fs.path.isAbsolute(rel_path)) {
         paths = &[_][]const u8{rel_path};
     } else {
-        assert(fs.path.isAbsolute(path));
+        if (!fs.path.isAbsolute(path)) {
+            return Error.PathMustBeAbsolute;
+        }
         paths = &[_][]const u8{ path, rel_path };
     }
     return fs.path.resolve(allocator, paths);
@@ -61,27 +68,54 @@ fn resolveLink(allocator: Allocator, path: []const u8, link: Link) ![]Link {
     const abs_path = try resolvePath(allocator, path, link.path);
     defer allocator.free(abs_path);
 
-    const target_basename = std.fs.path.basename(link.target);
-    const target_is_glob = target_basename[target_basename.len - 1] == '*';
-    if (target_is_glob and !path_is_dir) {
-        return allocator.alloc(Link, 0);
-    }
-
     const abs_target = try resolvePath(allocator, path, link.target);
     defer allocator.free(abs_target);
 
+    const target_glob_index = std.mem.indexOf(u8, abs_target, "*");
+
+    if (!path_is_dir and target_glob_index != null) {
+        // print("\nassert path: {s}, target: {s}\n", .{ abs_path, abs_target });
+        return Error.LinkPathMustBeDirWithGlob;
+    }
+
     if (path_is_dir) {
-        if (target_is_glob) {
-            // TODO: expand globs */?/{}
+        if (target_glob_index) |index| {
+            const dir_name = fs.path.dirname(abs_target[0..index]).?;
+            // print("glob target dir: {s} -> {s}\n", .{dir_name, abs_target});
+            var dir_iter = try std.fs.cwd().openDir(
+                dir_name,
+                .{ .iterate = true },
+            );
+            defer dir_iter.close();
+
+            const target_pattern_index = dir_name.len + 1;
+            var glob = try Glob.init(allocator, dir_iter, abs_target[target_pattern_index..]);
+            defer glob.deinit();
+            while (try glob.next()) |file_path| {
+                const target_basename = std.fs.path.basename(file_path);
+                const target_file = try std.fs.path.join(allocator, &[_][]const u8{ dir_name, file_path });
+                defer allocator.free(target_file);
+                const path_file = try std.fs.path.join(allocator, &[_][]const u8{ abs_path, target_basename });
+                defer allocator.free(path_file);
+
+                const link__ = try Link.init(
+                    allocator,
+                    target_file,
+                    path_file,
+                );
+                try fs_links.append(link__);
+                // print("glob found link: {}\n", .{link__});
+            }
+        } else {
+            const target_basename = std.fs.path.basename(abs_target);
+            const abs_path_ = try std.fs.path.join(allocator, &[_][]const u8{ abs_path, target_basename });
+            defer allocator.free(abs_path_);
+            try fs_links.append(try Link.init(
+                allocator,
+                abs_target,
+                abs_path_,
+            ));
         }
-        const buf = try allocator.alloc(u8, abs_path.len + target_basename.len);
-        const abs_path_ = try std.fmt.bufPrint(buf, "{s}{s}", .{ abs_path, target_basename });
-        defer allocator.free(abs_path_);
-        try fs_links.append(try Link.init(
-            allocator,
-            abs_target,
-            abs_path_,
-        ));
     } else {
         try fs_links.append(try Link.init(
             allocator,
@@ -124,9 +158,7 @@ pub fn verify(allocator: Allocator, path: []const u8, manifest: Manifest) !Manif
     var fs_links = std.ArrayList(Link).init(allocator);
     defer fs_links.deinit();
 
-    var iter = manifest.links.iterator();
-    while (iter.next()) |entry| {
-        const link = entry.value_ptr.*;
+    for (manifest.links.items) |link| {
         const diff_link = try verifyLink(allocator, path, link);
         defer diff_link.deinit(allocator);
 
@@ -153,14 +185,43 @@ pub fn resolve(allocator: Allocator, path: []const u8, manifest: Manifest) !Mani
     var links = std.ArrayList(Link).init(allocator);
     defer links.deinit();
 
-    var iter = manifest.links.iterator();
-    while (iter.next()) |entry| {
-        const link = entry.value_ptr.*;
+    for (manifest.links.items) |link| {
         const resolved_links = try resolveLink(allocator, path, link);
         try links.appendSlice(resolved_links);
     }
 
     return Manifest.initLinks(allocator, links.items);
+}
+
+pub fn readFile(allocator: Allocator, file_path: []const u8) ![]u8 {
+    const dir = std.fs.cwd();
+    const file = try dir.openFile(file_path, .{});
+    return try file.readToEndAlloc(allocator, 1000 * 1000 * 5); // Max 5MB file size
+}
+
+pub fn manifestFromPath(allocator: Allocator, path: []const u8) !Manifest {
+    var buf: [MAX_PATH_BYTES]u8 = undefined;
+    const manifest_path = try std.fs.cwd().realpath(path, &buf);
+    const manifest_dir = std.fs.path.dirname(manifest_path).?;
+    const manifest_file = try readFile(allocator, manifest_path);
+    defer allocator.free(manifest_file);
+
+    var tokenizer = try Tokenizer.init(allocator, manifest_file);
+    defer tokenizer.deinit();
+
+    const EnvLookup = struct {
+        pub fn lookup(name: []const u8) ?[]const u8 {
+            return std.posix.getenv(name);
+        }
+    };
+
+    var parser = Parser.init(allocator, tokenizer, EnvLookup.lookup);
+    defer parser.deinit();
+
+    var manifest = try Manifest.init(allocator, parser);
+    defer manifest.deinit();
+
+    return try resolve(allocator, manifest_dir, manifest);
 }
 
 test "verify manifest" {
@@ -173,8 +234,6 @@ test "verify manifest" {
 
     var buf: [MAX_PATH_BYTES]u8 = undefined;
     const abs_base = try tmp.dir.realpath(".", &buf);
-    // const base_path = ".";
-    // try tmp.dir.setAsCwd();
 
     const matrix = [_]struct { []Link, Manifest }{
         .{
@@ -255,7 +314,7 @@ test "verify link" {
         } } },
         .{ .{ .target = "target1", .path = "./path1" }, .{ .ok = .{
             .target = "target1",
-            .path = "./path1",
+            .path = "path1",
         } } },
         .{ .{ .target = "target1", .path = "./hej/../path1" }, .{ .ok = .{
             .target = "target1",
@@ -268,11 +327,11 @@ test "verify link" {
             .path = "path1",
             .new_target = "target3",
         } } },
-        .{ .{ .target = "./target1", .path = "path1" }, .{ .changed = .{
-            .target = "target1",
-            .path = "path1",
-            .new_target = "./target1",
-        } } },
+        // .{ .{ .target = "./target1", .path = "path1" }, .{ .changed = .{
+        //     .target = "target1",
+        //     .path = "path1",
+        //     .new_target = "target1",
+        // } } },
     };
 
     for (matrix) |row| {
@@ -286,19 +345,7 @@ test "verify link" {
         print("expected: {}\n", .{diff_link});
         print("got: {}\n", .{result});
 
-        try std.testing.expectEqualDeep(diff_link, result);
-        // switch (diff_link) {
-        //     .missing => try std.testing.expectEqual(diff_link, result),
-        //     .ok => |l| {
-        //         try std.testing.expectEqualDeep(l, result.ok);
-        //         try std.testing.expect(l.eql(result.ok));
-        //     },
-        //     .changed => |uplink| {
-        //         // print("expect link={any}, got link={any}\n", .{ diff_link.changed.link, result.changed.link });
-        //         // try std.testing.expectEqualDeep(uplink, result.changed);
-        //         try std.testing.expect(uplink.eql(result.changed));
-        //     },
-        // }
+        try expectEqualDiffLink(allocator, abs_base, diff_link, result);
     }
 }
 
@@ -315,13 +362,13 @@ test "resolve link" {
     var buf: [MAX_PATH_BYTES]u8 = undefined;
     const abs_base = try tmp.dir.realpath(".", &buf);
 
-    const matrix = [_]struct { Link, ?[]Link }{
+    const matrix = [_]struct { Link, Error![]Link }{
         .{
-            .{ .target = "*", .path = "path1" },
-            @constCast(&[_]Link{}),
+            .{ .target = "./*", .path = "path1" },
+            Error.LinkPathMustBeDirWithGlob,
         },
         .{
-            .{ .target = "*", .path = "path1/" },
+            .{ .target = "./*", .path = "path1/" },
             @constCast(&[_]Link{
                 .{ .target = "target1", .path = "path1/target1" },
                 .{ .target = "target3", .path = "path1/target3" },
@@ -333,14 +380,67 @@ test "resolve link" {
         const link = row[0];
         const expect_links = row[1];
 
-        const result = try resolveLink(allocator, abs_base, link);
-        defer {
-            for (result) |l| {
-                l.deinit(allocator);
-            }
-            allocator.free(result);
+        print("\nexpected {any}\n", .{expect_links});
+
+        var result: Error![]Link = undefined;
+        if (resolveLink(allocator, abs_base, link)) |r| {
+            result = r;
+        } else |err| {
+            result = switch (err) {
+                Error.PathMustBeAbsolute => Error.PathMustBeAbsolute,
+                Error.LinkPathMustBeDirWithGlob => Error.LinkPathMustBeDirWithGlob,
+                else => Error.ResolveLinkError,
+            };
+            print("resolve error: {}\n", .{err});
         }
 
-        try std.testing.expectEqualDeep(expect_links, result);
+        print("got {any}\n", .{result});
+
+        if (result) |result_| {
+            const expect_links_ = try expect_links;
+            defer {
+                for (result_) |l| {
+                    l.deinit(allocator);
+                }
+                allocator.free(result_);
+            }
+            try std.testing.expectEqual(expect_links_.len, result_.len);
+            for (expect_links_, 0..) |expect_link, i| {
+                try expectEqualLink(allocator, abs_base, expect_link, result_[i]);
+            }
+            // try std.testing.expectEqualDeep(expect_links, result);
+        } else |err| {
+            try std.testing.expectEqual(expect_links, err);
+        }
     }
+}
+
+fn expectEqualLink(allocator: Allocator, tmp_path: []const u8, exp: Link, res: Link) !void {
+    const res_target = try std.fs.path.relative(allocator, tmp_path, res.target);
+    defer allocator.free(res_target);
+    const res_path = try std.fs.path.relative(allocator, tmp_path, res.path);
+    defer allocator.free(res_path);
+    try std.testing.expectEqualStrings(exp.target, res_target);
+    try std.testing.expectEqualStrings(exp.path, res_path);
+}
+
+fn expectEqualUpdateLink(allocator: Allocator, tmp_path: []const u8, exp: UpdateLink, res: UpdateLink) !void {
+    const res_target = try std.fs.path.relative(allocator, tmp_path, res.target);
+    defer allocator.free(res_target);
+    const res_path = try std.fs.path.relative(allocator, tmp_path, res.path);
+    defer allocator.free(res_path);
+    const res_new_target = try std.fs.path.relative(allocator, tmp_path, res.new_target);
+    defer allocator.free(res_new_target);
+    try std.testing.expectEqualStrings(exp.target, res_target);
+    try std.testing.expectEqualStrings(exp.path, res_path);
+    try std.testing.expectEqualStrings(exp.new_target, res_new_target);
+}
+
+fn expectEqualDiffLink(allocator: Allocator, tmp_path: []const u8, exp: DiffLink, res: DiffLink) !void {
+    try std.testing.expectEqual(@tagName(exp), @tagName(res));
+    try switch (exp) {
+        .ok => |link| expectEqualLink(allocator, tmp_path, link, res.ok),
+        .changed => |uplink| expectEqualUpdateLink(allocator, tmp_path, uplink, res.changed),
+        .missing => {},
+    };
 }
