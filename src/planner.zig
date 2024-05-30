@@ -20,14 +20,6 @@ pub const Manifest = struct {
 
         for (ls) |link| {
             const link_ = try link.clone(allocator);
-            // try links.put(link_.path, link_);
-
-            // const v = try links.getOrPut(link_.path);
-            // if (v.found_existing) {
-            //     print("Manifest.init error: {}\n", .{link_});
-            //     return Error.DuplicateManifestEntry;
-            // }
-            // v.value_ptr.* = link_;
             try links.append(link_);
         }
 
@@ -39,20 +31,10 @@ pub const Manifest = struct {
 
     pub fn init(allocator: Allocator, p: Parser) !@This() {
         var parser = p;
-        // var links = std.StringArrayHashMap(Link).init(allocator);
         var links = std.ArrayList(Link).init(allocator);
 
         while (try parser.next(allocator)) |link| {
             const link_ = try link.clone(allocator);
-            // std.debug.print("{}", .{link_});
-            // try links.put(link_.path, link_);
-
-            // const v = try links.getOrPut(link_.path);
-            // if (v.found_existing) {
-            //     print("Manifest.init error: {}\n", .{link_});
-            //     return Error.DuplicateManifestEntry;
-            // }
-            // v.value_ptr.* = link_;
             try links.append(link_);
         }
 
@@ -63,14 +45,29 @@ pub const Manifest = struct {
     }
 
     pub fn deinit(self: *@This()) void {
-        // var iter = self.links.iterator();
-        // while (iter.next()) |entry| {
-        //     entry.value_ptr.*.deinit(self.allocator);
-        // }
         for (self.links.items) |link| {
             link.deinit(self.allocator);
         }
         self.links.deinit();
+    }
+
+    pub fn append(self: *@This(), link: *Link) !void {
+        try self.links.append(try link.clone(self.allocator));
+    }
+
+    pub fn appendManifest(self: *@This(), manifest: *Manifest) !void {
+        for (manifest.links.items) |link| {
+            try self.links.append(try link.clone(self.allocator));
+        }
+    }
+
+    pub fn save(
+        self: @This(),
+        writer: anytype,
+    ) !void {
+        for (self.links.items) |link| {
+            _ = try writer.print("{s}:{s}\n", .{ link.path, link.target });
+        }
     }
 
     pub fn format(
@@ -83,9 +80,6 @@ pub const Manifest = struct {
         try writer.writeAll("{\n");
 
         for (self.links.items) |link| {
-        // var iter = self.links.iterator();
-        // while (iter.next()) |entry| {
-        //     const link = entry.value_ptr.*;
             _ = try writer.print("  {}\n", .{link});
         }
         try writer.writeAll("}");
@@ -135,7 +129,7 @@ pub const Planner = struct {
             _: std.fmt.FormatOptions,
             writer: anytype,
         ) !void {
-            _ = try writer.print("{s} -> ({s} != {s})", .{ self.path, self.target, self.new_target });
+            _ = try writer.print("{s} -> {s} ({s})", .{ self.path, self.new_target, self.target });
         }
 
         pub fn deinit(self: @This(), allocator: ?Allocator) void {
@@ -152,9 +146,9 @@ pub const Planner = struct {
         defer current_map.deinit();
         for (current.links.items) |l| try current_map.put(l.path, l);
 
-        // next_map = std.StringHashMap(Link).init(allocator);
-        // defer next_map.deinit();
-        // for (next.links.items) |l| try next_map.put(l.path, l);
+        var next_map = std.StringHashMap(Link).init(allocator);
+        defer next_map.deinit();
+        for (next.links.items) |l| try next_map.put(l.path, l);
 
         var noop = std.ArrayList(Link).init(allocator);
         defer noop.deinit();
@@ -171,11 +165,10 @@ pub const Planner = struct {
         var keep = std.StringHashMap(void).init(allocator);
         defer keep.deinit();
 
-        for (next.links.items) |link| {
-        // var next_iter = next.links.iterator();
-        // while (next_iter.next()) |entry| {
-        //     const link = entry.value_ptr.*;
-            try keep.put(link.path, void{});
+        var next_iter = next_map.iterator();
+        while (next_iter.next()) |entry| {
+            const link = entry.value_ptr.*;
+            try keep.put(link.path, {});
 
             if (current_map.get(link.path)) |cur_link| {
                 if (std.mem.eql(u8, cur_link.target, link.target)) {
@@ -194,9 +187,6 @@ pub const Planner = struct {
         }
 
         for (current.links.items) |cur_link| {
-        // var cur_iter = current.links.iterator();
-        // while (cur_iter.next()) |entry| {
-        //     const cur_link = entry.value_ptr.*;
             if (keep.get(cur_link.path) == null) {
                 try remove.append(try cur_link.clone(allocator));
             }
@@ -252,7 +242,7 @@ pub const Planner = struct {
             _ = try writer.print("  + {}\n", .{link});
         }
         for (self.update) |uplink| {
-            _ = try writer.print("  ~ {s} -> {s}\n", .{ uplink.path, uplink.new_target });
+            _ = try writer.print("  ~ {}\n", .{uplink});
         }
         for (self.remove) |link| {
             _ = try writer.print("  - {}\n", .{link});
@@ -329,9 +319,45 @@ test "simple planner" {
     );
     defer planner.deinit();
 
-    std.debug.print("{}\n", .{manifest_current});
-    std.debug.print("{}\n", .{manifest_next});
-    std.debug.print("{}\n", .{planner});
+    std.testing.expect(expect.eql(planner)) catch |err| {
+        // std.debug.print("{}\n", .{manifest_current});
+        // std.debug.print("{}\n", .{manifest_next});
+        std.debug.print("expected: {}\ngot: {}\n", .{ expect, planner });
+        return err;
+    };
+}
 
-    try std.testing.expect(expect.eql(planner));
+test "manifest append" {
+    const allocator = std.testing.allocator;
+
+    const matrix = [_]struct { m1: Manifest, m2: Manifest, expect: Manifest }{
+        .{
+            .m1 = try Manifest.initLinks(allocator, @constCast(&[_]Link{
+                .{ .target = "target1", .path = "path1" },
+            })),
+            .m2 = try Manifest.initLinks(allocator, @constCast(&[_]Link{
+                .{ .target = "target2", .path = "path2" },
+            })),
+            .expect = try Manifest.initLinks(allocator, @constCast(&[_]Link{
+                .{ .target = "target1", .path = "path1" },
+                .{ .target = "target2", .path = "path2" },
+            })),
+        },
+    };
+
+    for (matrix) |row| {
+        var m1 = row.m1;
+        defer m1.deinit();
+        var m2 = row.m2;
+        defer m2.deinit();
+        var expect = row.expect;
+        defer expect.deinit();
+
+        try m1.appendManifest(&m2);
+
+        std.testing.expect(expect.eql(m1)) catch |err| {
+            print("expected: {}\ngot: {}\n", .{ expect, m1 });
+            return err;
+        };
+    }
 }

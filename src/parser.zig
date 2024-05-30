@@ -28,34 +28,11 @@ pub const Link = struct {
     path: []const u8,
 
     pub fn init(allocator: Allocator, target: []const u8, path: []const u8) !@This() {
-        // const target_trimed = try allocator.dupe(u8, std.mem.trim(u8, target, " "));
-        // var path_trimed = std.mem.trim(u8, path, " ");
-
-        // if (path_trimed[path_trimed.len - 1] == '/') {
-        //     const target_basename = std.fs.path.basename(target);
-        //     const buf = try allocator.alloc(u8, path_trimed.len + target_basename.len);
-        //     path_trimed = try std.fmt.bufPrint(buf, "{s}{s}", .{ path_trimed, target_basename });
-        // } else {
-        //     path_trimed = try allocator.dupe(u8, path_trimed);
-        // }
-
         return .{
             .target = try allocator.dupe(u8, std.mem.trim(u8, target, " ")),
             .path = try allocator.dupe(u8, std.mem.trim(u8, path, " ")),
         };
     }
-
-    // pub fn initRel(allocator: Allocator, base: []const u8, rel: []const u8, path: []const u8) !Link {
-    //     const buf = try allocator.alloc(u8, abs_path.len + target_basename.len);
-    //     defer allocator.free(buf);
-    //     try std.fmt.bufPrint(buf, "{s}{s}", .{ base, rel });
-
-    //     return Link.init(
-    //         allocator,
-    //         buf,
-    //         path,
-    //     ));
-    // }
 
     pub fn clone(self: @This(), allocator: Allocator) !@This() {
         return @This().init(allocator, self.target, self.path);
@@ -115,7 +92,9 @@ pub const Parser = struct {
         return text;
     }
 
-    fn makeLink(self: *@This(), allocator: Allocator) !Link {
+    fn makeLink(self: *@This(), allocator: Allocator) !?Link {
+
+        if (self.target.items.len == 0) return null;
         const path = try self.makePath(allocator);
         defer allocator.free(path);
         const target = try self.makeTarget(allocator);
@@ -132,6 +111,7 @@ pub const Parser = struct {
             if (try self.tokenizer.next(allocator)) |token| {
                 defer token.deinit(allocator);
                 const tag = token.tag;
+
                 switch (self.state) {
                     .start, .symlink_end => switch (tag) {
                         .path => {
@@ -142,7 +122,6 @@ pub const Parser = struct {
                         },
                         .path_env => {
                             env_text = self.envLookup(token.text);
-                            // std.debug.print("Parser.next() lookup env: {s} = {s}\n", .{token.text, env_text.?});
                             try self.path.appendSlice(env_text.?);
                         },
                         .target, .target_env => return Error.NotAllowedOrder,
@@ -154,7 +133,6 @@ pub const Parser = struct {
                         },
                         .target_env => {
                             env_text = self.envLookup(token.text);
-                            // std.debug.print("Parser.next() lookup env: {s} = {s}\n", .{token.text, env_text.?});
                             try self.target.appendSlice(env_text.?);
                         },
                         .newline => {
@@ -166,6 +144,7 @@ pub const Parser = struct {
                     },
                 }
             } else {
+                link = try self.makeLink(allocator);
                 break;
             }
         }
@@ -219,6 +198,56 @@ test "parse simple manifest" {
             try std.testing.expectEqualStrings(row.path, link.path);
         } else {
             // Too few lines in manifest
+            try std.testing.expect(false);
+        }
+    }
+
+    if (try parser.next(allocator)) |link| {
+        defer link.deinit(allocator);
+        // Lines in manifest untested against matrix
+        try std.testing.expect(false);
+    }
+}
+
+test "parse manifest no trailing newline" {
+    const allocator = std.testing.allocator;
+
+    const manifest =
+        \\ # comment 1
+        \\path1:target1
+        \\path2:target2
+    ;
+
+    const matrix = [_]Link{
+        .{
+            .target = "target1",
+            .path = "path1",
+        },
+        .{
+            .target = "target2",
+            .path = "path2",
+        },
+    };
+
+    const tokenizer = try Tokenizer.init(allocator, manifest);
+    defer tokenizer.deinit();
+
+    const EnvLookup = struct {
+        pub fn lookup(_: []const u8) ?[]const u8 {
+            return "_HOME_";
+        }
+    };
+
+    var parser = Parser.init(allocator, tokenizer, EnvLookup.lookup);
+    defer parser.deinit();
+
+    for (matrix) |row| {
+        if (try parser.next(allocator)) |link| {
+            defer link.deinit(allocator);
+            try std.testing.expectEqualStrings(row.target, link.target);
+            try std.testing.expectEqualStrings(row.path, link.path);
+        } else {
+            // Didn't parse enough links from manifest
             try std.testing.expect(false);
         }
     }

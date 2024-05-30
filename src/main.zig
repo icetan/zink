@@ -5,35 +5,58 @@ const ArrayList = std.ArrayList;
 const MAX_PATH_BYTES = std.fs.MAX_PATH_BYTES;
 const print = std.debug.print;
 
-const verify = @import("fs.zig").verify;
-const resolve = @import("fs.zig").resolve;
-const manifestFromPath = @import("fs.zig").manifestFromPath;
+const resolve = @import("fs.zig");
 const Tokenizer = @import("tokenizer.zig").Tokenizer;
 const Parser = @import("parser.zig").Parser;
 const Manifest = @import("planner.zig").Manifest;
 const Planner = @import("planner.zig").Planner;
 
+const Error = error{
+    LogInconsistent,
+};
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
 
-    var buf: [MAX_PATH_BYTES]u8 = undefined;
-    const manifest_path = try std.fs.cwd().realpath("/home/icetan/.ln-conf", &buf);
-    const manifest_dir = std.fs.path.dirname(manifest_path).?;
-    var manifest = try manifestFromPath(allocator, manifest_path);
+    // var buf: [MAX_PATH_BYTES]u8 = undefined;
+    // const manifest_paths = try std.fs.cwd().realpath("/home/icetan/.ln-conf", &buf);
+    var manifest_log = (try resolve.readManifests(allocator, &[_][]const u8{
+        "./manifest.log.zink",
+    })).?;
+    defer manifest_log.deinit();
+    // std.debug.print("Log Manifest: {}\n", .{manifest_log});
+
+    var manifest = (try resolve.readManifests(allocator, &[_][]const u8{
+        "/home/icetan/.ln-conf",
+        "/home/icetan/.nix-profile/etc/ln-conf.d/*",
+    })).?;
     defer manifest.deinit();
+    // std.debug.print("New Manifest: {}\n", .{manifest});
 
-    const manifest_next_path = try std.fs.cwd().realpath("/home/icetan/manifest.zink", &buf);
-    var manifest_next = try manifestFromPath(allocator, manifest_next_path);
-    defer manifest_next.deinit();
 
-    var manifest_current = try verify(allocator, manifest_dir, manifest);
-    defer manifest_current.deinit();
-    std.debug.print("Current Manifest: {}\n", .{manifest_current});
+    var verified_log = try resolve.verify(allocator, "", manifest_log);
+    defer verified_log.deinit();
+    // std.debug.print("fs: {}\n", .{verified_log});
+    // std.debug.print("log: {}\n", .{manifest_log});
+    var diff = try Planner.init(allocator, verified_log, manifest_log);
+    // var diff = try resolve.verifyManifest(allocator, manifest_log);
+    defer diff.deinit();
 
-    std.debug.print("Next Manifest: {}\n", .{manifest_next});
+    // std.debug.print("Log diff: {}\n", .{diff});
+    const overwrite_mode: resolve.ExecPlanOverwriteMode = .overwrite;
 
-    var planner = try Planner.init(allocator, manifest_current, manifest_next);
+    if (overwrite_mode == .no_diff and !diff.no_diff()) {
+        return Error.LogInconsistent;
+    }
+
+    var planner = try Planner.init(allocator, verified_log, manifest);
     defer planner.deinit();
-    std.debug.print("Result: {}\n", .{planner});
+    // std.debug.print("Result: {}\n", .{planner});
+
+    try resolve.execPlan(planner, .{
+        .overwrite_mode = overwrite_mode,
+        .dry = false,
+    });
+    try resolve.saveManifestFile(manifest, "./manifest.log.zink");
 }
