@@ -18,7 +18,7 @@ const Parser = parser.Parser;
 const Link = parser.Link;
 const Tokenizer = @import("tokenizer.zig").Tokenizer;
 
-const Error = error{
+pub const Error = error{
     ManifestPathMustBeAbsolute,
     PathMustBeAbsolute,
     LinkPathMustBeDirWithGlob,
@@ -313,19 +313,43 @@ pub fn saveManifestFile(manifest: Manifest, path: []const u8) !void {
 //     return try Planner.init(allocator, verified, manifest);
 // }
 
-pub const ExecPlanOverwriteMode = enum{
+pub const ExecPlanOverwriteMode = enum {
     no_diff,
     overwrite,
     move,
 };
 
-pub const ExecPlanFlags = struct{
+pub const ExecPlanFlags = struct {
     dry: bool = false,
     overwrite_mode: ExecPlanOverwriteMode = .no_diff,
 };
 
 pub fn execPlan(plan: Planner, flags: ExecPlanFlags) !void {
     const stdout = std.io.getStdOut().writer();
+    const stderr = std.io.getStdErr().writer();
+
+    if (flags.dry) try stderr.print("INFO: Dry run\n", .{});
+
+    for (plan.add) |link| {
+        if (fs.accessAbsolute(link.path, .{})) |_| {
+            switch (flags.overwrite_mode) {
+                .no_diff => {
+                    try stderr.print("INFO: Symlink '{s}' already exists\n", .{link.path});
+                    return Error.OverwriteModeNoDiff;
+                },
+                .overwrite => {
+                    try stderr.print("INFO: Overwriting symlink '{s}'\n", .{link.path});
+                    if (!flags.dry) {
+                        try fs.deleteFileAbsolute(link.path);
+                    }
+                },
+                .move => {
+                    // TODO: move file
+                    unreachable;
+                },
+            }
+        } else |_| {}
+    }
 
     for (plan.remove) |link| {
         if (!flags.dry) try fs.deleteFileAbsolute(link.path);
@@ -334,23 +358,6 @@ pub fn execPlan(plan: Planner, flags: ExecPlanFlags) !void {
 
     for (plan.add) |link| {
         if (!flags.dry) {
-            if (fs.accessAbsolute(link.path, .{})) |_| {
-                // switch(err) {
-                //     error.PathAlreadyExists => |pae| {
-                switch(flags.overwrite_mode) {
-                    .no_diff => return Error.OverwriteModeNoDiff,
-                    .overwrite => {
-                        try fs.deleteFileAbsolute(link.path);
-                    },
-                    .move => {
-                        // TODO: move file
-                        unreachable;
-                    },
-                }
-                //     },
-                //     else => {},
-                // }
-            } else |_| {}
             try fs.symLinkAbsolute(link.target, link.path, .{});
         }
         try stdout.print("  + {}\n", .{link});
@@ -432,7 +439,7 @@ test "verify manifest" {
         defer got.deinit();
 
         testing.expectEqualManifest(allocator, abs_base, expect, got) catch |err| {
-            print("\nexpected: {}\ngot: {}\n", .{expect, got});
+            print("\nexpected: {}\ngot: {}\n", .{ expect, got });
             return err;
         };
     }
@@ -479,7 +486,7 @@ test "verify link" {
         defer result.deinit(allocator);
 
         testing.expectEqualDiffLink(allocator, abs_base, diff_link, result) catch |err| {
-            print("\nexpected: {}\ngot {}\n", .{diff_link, result});
+            print("\nexpected: {}\ngot {}\n", .{ diff_link, result });
             return err;
         };
     }
@@ -536,7 +543,7 @@ test "resolve link" {
                 allocator.free(result_);
             }
             testing.expectEqualLinks(allocator, abs_base, expect_links_, result_) catch |err| {
-                print("expected: {any}\ngot: {any}\n", .{expect_links_, result_});
+                print("expected: {any}\ngot: {any}\n", .{ expect_links_, result_ });
                 return err;
             };
         } else |err| {
