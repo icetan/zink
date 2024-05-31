@@ -230,6 +230,15 @@ pub const Planner = struct {
         return self.add.len + self.remove.len + self.update.len == 0;
     }
 
+    pub fn toManifest(self: @This()) !Manifest {
+        var links = std.ArrayList(Link).init(self.allocator.?);
+        defer links.deinit();
+        try links.appendSlice(self.noop);
+        for (self.update) |uplink| try links.append(try uplink.toLink(self.allocator.?));
+        try links.appendSlice(self.add);
+        return Manifest.initLinks(self.allocator.?, links.items);
+    }
+
     pub fn format(
         self: @This(),
         comptime _: []const u8,

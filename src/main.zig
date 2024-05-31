@@ -60,7 +60,6 @@ fn eql(a: []const u8, b: []const u8) bool {
 // };
 
 pub fn main() !void {
-    const stdout = std.io.getStdOut().writer();
     var exec_flags: resolve.ExecPlanFlags = .{};
 
     var args = std.process.args();
@@ -104,16 +103,9 @@ pub fn main() !void {
     } else {
         log_path = try std.mem.concat(allocator, u8, &.{ home_env, "/.zink.state" });
     }
-    // Read current state
-    var manifest_log = (try resolve.readManifests(allocator, &.{log_path})).?;
-    defer manifest_log.deinit();
-
-    // Read manifest files
-    var manifest = (try resolve.readManifests(allocator, zink_paths.items)).?;
-    defer manifest.deinit();
 
     // Execute plan
-    resolve.execPlan(allocator, manifest_log, manifest, exec_flags) catch |e| {
+    resolve.execPlan(allocator, log_path, zink_paths.items, exec_flags) catch |e| {
         switch (e) {
             resolve.Error.OverwriteModeNoDiff, resolve.Error.InconsistentState => {
                 try err("Inconsistent state, use --overwrite to ignore this", .{}, .{ .code = .inconsistent_state });
@@ -121,17 +113,4 @@ pub fn main() !void {
             else => return e,
         }
     };
-
-    // Save state
-    if (!exec_flags.dry and !exec_flags.script) {
-        try resolve.saveManifestFile(manifest, log_path);
-    }
-    // Print new state log to stdout if script mode
-    if (exec_flags.script) {
-        var buf: [MAX_PATH_BYTES]u8 = undefined;
-        const abs_log_path = try std.fs.cwd().realpath(log_path, &buf);
-        try stdout.print("echo >{s} '\\\n", .{abs_log_path});
-        try manifest.save(stdout);
-        try stdout.writeAll("'\n");
-    }
 }

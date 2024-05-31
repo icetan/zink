@@ -325,7 +325,7 @@ pub const ExecPlanFlags = struct {
     script: bool = false,
 };
 
-pub fn execPlan(allocator: Allocator, manifest_log: Manifest, manifest: Manifest, flags: ExecPlanFlags) !void {
+pub fn execPlan(allocator: Allocator, log_path: []const u8, manifest_paths: []const []const u8, flags: ExecPlanFlags) !void {
     const stdout = std.io.getStdOut().writer();
     const stderr = std.io.getStdErr().writer();
     var abort = false;
@@ -336,6 +336,11 @@ pub fn execPlan(allocator: Allocator, manifest_log: Manifest, manifest: Manifest
     const dry = flags.dry or flags.script;
     if (dry) try stderr.print("INFO: Dry run\n", .{});
 
+    // Read log (current state)
+    var manifest_log = (try readManifests(allocator, &.{log_path})).?;
+    defer manifest_log.deinit();
+
+    // Verify log file against file system
     var verified_log = try verify(allocator, "", manifest_log);
     defer verified_log.deinit();
     // try stderr.print("verified_log: {}\n", .{verified_log});
@@ -343,6 +348,10 @@ pub fn execPlan(allocator: Allocator, manifest_log: Manifest, manifest: Manifest
 
     var log_diff = try Planner.init(allocator, verified_log, manifest_log);
     defer log_diff.deinit();
+
+    // Read manifest files
+    var manifest = (try readManifests(allocator, manifest_paths)).?;
+    defer manifest.deinit();
 
     // TODO: Check if changed symlinks are in planned update, if not don't abort
     if (log_diff.update.len > 0) {
@@ -422,8 +431,21 @@ pub fn execPlan(allocator: Allocator, manifest_log: Manifest, manifest: Manifest
         }
     }
 
+    const new_log = try plan.toManifest();
+    // print("new log: \n {}\n", .{new_log});
+
+    // Save state
+    if (!dry) {
+        try saveManifestFile(new_log, log_path);
+    }
+    // Print new state log to stdout if script mode
     if (flags.script) {
+        var buf: [MAX_PATH_BYTES]u8 = undefined;
+        const abs_log_path = try std.fs.cwd().realpath(log_path, &buf);
         try stdout.writeAll(scriptBuf.items);
+        try stdout.print("echo >{s} '\\\n", .{abs_log_path});
+        try new_log.save(stdout);
+        try stdout.writeAll("'\n");
     }
 }
 
