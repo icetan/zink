@@ -2,7 +2,6 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const fs = std.fs;
 const Dir = std.fs.Dir;
-const assert = std.debug.assert;
 const print = std.debug.print;
 
 const MAX_PATH_BYTES = fs.MAX_PATH_BYTES;
@@ -118,12 +117,15 @@ fn resolveLink(allocator: Allocator, path: []const u8, link: Link) ![]const Link
 
     if (path_is_dir) {
         if (target_glob_index) |index| {
-            const dir_name = fs.path.dirname(abs_target[0..index]).?;
-            // print("glob target dir: {s} -> {s}\n", .{dir_name, abs_target});
-            var dir_iter = try std.fs.cwd().openDir(
+            const index_ = index + 1;
+            const dir_name = fs.path.dirname(abs_target[0..index_]).?;
+            var dir_iter = std.fs.cwd().openDir(
                 dir_name,
                 .{ .iterate = true },
-            );
+            ) catch |err| {
+                print("Couldn't resolve glob path: '{s}'\n", .{abs_target});
+                return err;
+            };
             defer dir_iter.close();
 
             const target_pattern_index = dir_name.len + 1;
@@ -142,7 +144,6 @@ fn resolveLink(allocator: Allocator, path: []const u8, link: Link) ![]const Link
                     path_file,
                 );
                 try fs_links.append(link__);
-                // print("glob found link: {}\n", .{link__});
             }
         } else {
             const target_basename = std.fs.path.basename(abs_target);
@@ -233,13 +234,19 @@ pub fn resolve(allocator: Allocator, path: []const u8, manifest: Manifest) !Mani
 
 pub fn readFile(allocator: Allocator, file_path: []const u8) ![]u8 {
     const dir = std.fs.cwd();
-    const file = try dir.openFile(file_path, .{});
+    const file = dir.openFile(file_path, .{}) catch |err| {
+        print("Couldn't read file: '{s}'\n", .{file_path});
+        return err;
+    };
     return try file.readToEndAlloc(allocator, 1000 * 1000 * 5); // Max 5MB file size
 }
 
 pub fn manifestFromPath(allocator: Allocator, path: []const u8) !Manifest {
     var buf: [MAX_PATH_BYTES]u8 = undefined;
-    const manifest_path = try std.fs.cwd().realpath(path, &buf);
+    const manifest_path = std.fs.cwd().realpath(path, &buf) catch |err| {
+        print("Couldn't find manifest file: '{s}'\n", .{path});
+        return err;
+    };
     const manifest_dir = std.fs.path.dirname(manifest_path).?;
     const manifest_file = try readFile(allocator, manifest_path);
     defer allocator.free(manifest_file);
@@ -277,7 +284,6 @@ pub fn readManifests(allocator: Allocator, glob_paths: []const []const u8) !?Man
                 const basename = std.fs.path.basename(file_path_);
                 const file_path = try std.fs.path.join(allocator, &.{ dir_path, basename });
                 defer allocator.free(file_path);
-                // print("Glob: {s}\n", .{file_path});
 
                 var m = try manifestFromPath(allocator, file_path);
                 if (manifest) |*manifest_| {
@@ -388,7 +394,7 @@ pub fn execPlan(allocator: Allocator, log_path: []const u8, manifest_paths: []co
                 },
                 .move => {
                     // TODO: move file
-                    unreachable;
+                    @panic("Move has not been implemented");
                 },
             }
         } else |_| {}
@@ -432,7 +438,6 @@ pub fn execPlan(allocator: Allocator, log_path: []const u8, manifest_paths: []co
     }
 
     const new_log = try plan.toManifest();
-    // print("new log: \n {}\n", .{new_log});
 
     // Save state
     if (!dry) {

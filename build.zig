@@ -36,7 +36,7 @@ pub fn build(b: *std.Build) void {
     ) orelse &[0][]const u8{};
     // std.debug.print("\nfilters: {s}\n", .{test_filters});
     const unit_tests = b.addTest(.{
-        .root_source_file = b.path("tests.zig"),
+        .root_source_file = b.path("src/tests.zig"),
         .target = target,
         .optimize = optimize,
         .filters = test_filters,

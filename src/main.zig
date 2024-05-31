@@ -26,10 +26,17 @@ fn usage() !void {
     var args = std.process.args();
     const pname = args.next().?;
     try std.io.getStdErr().writer().print(
-        \\Usage: {s} [OPTIONS]
-        \\  --dry, -n
-        \\  --overwrite, -o
-        \\  --help, h
+        \\Usage: {s} [OPTIONS] [FILES..]
+        \\
+        \\Options:
+        \\  -n, --dry
+        \\  -o, --overwrite
+        \\  -s, --script
+        \\  -h, --help
+        \\
+        \\Envs:
+        \\  ZINK_PATH
+        \\  ZINK_LOG_PATH
         \\
     , .{std.fs.path.basename(pname)});
     std.process.exit(1);
@@ -60,6 +67,12 @@ fn eql(a: []const u8, b: []const u8) bool {
 // };
 
 pub fn main() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    const allocator = gpa.allocator();
+
+    var zink_paths = std.ArrayList([]const u8).init(allocator);
+    defer zink_paths.deinit();
+
     var exec_flags: resolve.ExecPlanFlags = .{};
 
     var args = std.process.args();
@@ -76,25 +89,23 @@ pub fn main() !void {
             exec_flags.verbose = true;
         } else if (eql(arg, "-s") or eql(arg, "--script")) {
             exec_flags.script = true;
-        } else {
+        } else if (arg[0] == '-') {
             try err("No option '{s}'", .{arg}, .{ .usage = true, .code = .invalid_option });
+        } else {
+            try zink_paths.append(try allocator.dupe(u8, arg));
         }
     }
 
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    const allocator = gpa.allocator();
-
     const home_env = std.posix.getenv("HOME").?;
 
-    var zink_paths = std.ArrayList([]const u8).init(allocator);
-    defer zink_paths.deinit();
-
-    if (std.posix.getenv("ZINK_PATH")) |path_env| {
-        var zink_path_iter = std.mem.split(u8, path_env, ":");
-        while (zink_path_iter.next()) |zp| try zink_paths.append(zp);
-    } else {
-        const zink_path = try std.mem.concat(allocator, u8, &.{ home_env, "/.zink" });
-        try zink_paths.append(zink_path);
+    if (zink_paths.items.len == 0) {
+        if (std.posix.getenv("ZINK_PATH")) |path_env| {
+            var zink_path_iter = std.mem.split(u8, path_env, ":");
+            while (zink_path_iter.next()) |zp| try zink_paths.append(zp);
+        } else {
+            const zink_path = try std.mem.concat(allocator, u8, &.{ home_env, "/.zink" });
+            try zink_paths.append(zink_path);
+        }
     }
 
     var log_path: []const u8 = undefined;
