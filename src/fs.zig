@@ -24,6 +24,7 @@ pub const Error = error{
     LinkPathMustBeDirWithGlob,
     ResolveLinkError,
     OverwriteModeNoDiff,
+    InconsistentState,
 };
 
 const DiffLink = union(enum) {
@@ -43,12 +44,12 @@ const DiffLink = union(enum) {
 fn resolvePath(allocator: Allocator, path: []const u8, rel_path: []const u8) ![]const u8 {
     var paths: []const []const u8 = undefined;
     if (fs.path.isAbsolute(rel_path)) {
-        paths = &[_][]const u8{rel_path};
+        paths = &.{rel_path};
     } else {
         if (!fs.path.isAbsolute(path)) {
             return Error.PathMustBeAbsolute;
         }
-        paths = &[_][]const u8{ path, rel_path };
+        paths = &.{ path, rel_path };
     }
     return fs.path.resolve(allocator, paths);
 }
@@ -97,7 +98,7 @@ pub fn getGlobIter(allocator: Allocator, path: []const u8) !?struct { Glob, std.
 //     return allocator.dupe(u8 file_paths.items);
 // }
 
-fn resolveLink(allocator: Allocator, path: []const u8, link: Link) ![]Link {
+fn resolveLink(allocator: Allocator, path: []const u8, link: Link) ![]const Link {
     var fs_links = std.ArrayList(Link).init(allocator);
     defer fs_links.deinit();
 
@@ -130,9 +131,9 @@ fn resolveLink(allocator: Allocator, path: []const u8, link: Link) ![]Link {
             defer glob.deinit();
             while (try glob.next()) |file_path| {
                 const target_basename = std.fs.path.basename(file_path);
-                const target_file = try std.fs.path.join(allocator, &[_][]const u8{ dir_name, file_path });
+                const target_file = try std.fs.path.join(allocator, &.{ dir_name, file_path });
                 defer allocator.free(target_file);
-                const path_file = try std.fs.path.join(allocator, &[_][]const u8{ abs_path, target_basename });
+                const path_file = try std.fs.path.join(allocator, &.{ abs_path, target_basename });
                 defer allocator.free(path_file);
 
                 const link__ = try Link.init(
@@ -145,7 +146,7 @@ fn resolveLink(allocator: Allocator, path: []const u8, link: Link) ![]Link {
             }
         } else {
             const target_basename = std.fs.path.basename(abs_target);
-            const abs_path_ = try std.fs.path.join(allocator, &[_][]const u8{ abs_path, target_basename });
+            const abs_path_ = try std.fs.path.join(allocator, &.{ abs_path, target_basename });
             defer allocator.free(abs_path_);
             try fs_links.append(try Link.init(
                 allocator,
@@ -160,7 +161,7 @@ fn resolveLink(allocator: Allocator, path: []const u8, link: Link) ![]Link {
             abs_path,
         ));
     }
-    return try allocator.dupe(Link, fs_links.items);
+    return fs_links.toOwnedSlice();
 }
 
 fn verifyLink(allocator: Allocator, path: []const u8, link: Link) !DiffLink {
@@ -238,7 +239,6 @@ pub fn readFile(allocator: Allocator, file_path: []const u8) ![]u8 {
 
 pub fn manifestFromPath(allocator: Allocator, path: []const u8) !Manifest {
     var buf: [MAX_PATH_BYTES]u8 = undefined;
-    // print("Reading manifest file {s}\n", .{path});
     const manifest_path = try std.fs.cwd().realpath(path, &buf);
     const manifest_dir = std.fs.path.dirname(manifest_path).?;
     const manifest_file = try readFile(allocator, manifest_path);
@@ -265,7 +265,6 @@ pub fn manifestFromPath(allocator: Allocator, path: []const u8) !Manifest {
 pub fn readManifests(allocator: Allocator, glob_paths: []const []const u8) !?Manifest {
     var manifest: ?Manifest = null;
     for (glob_paths) |glob_path| {
-        // print("Path: {s}\n", .{glob_path});
         var buf: [MAX_PATH_BYTES]u8 = undefined;
         if (try getGlobIter(allocator, glob_path)) |x| {
             var glob = x[0];
@@ -276,7 +275,7 @@ pub fn readManifests(allocator: Allocator, glob_paths: []const []const u8) !?Man
 
             while (try glob.next()) |file_path_| {
                 const basename = std.fs.path.basename(file_path_);
-                const file_path = try std.fs.path.join(allocator, &[_][]const u8{ dir_path, basename });
+                const file_path = try std.fs.path.join(allocator, &.{ dir_path, basename });
                 defer allocator.free(file_path);
                 // print("Glob: {s}\n", .{file_path});
 
@@ -322,26 +321,61 @@ pub const ExecPlanOverwriteMode = enum {
 pub const ExecPlanFlags = struct {
     dry: bool = false,
     overwrite_mode: ExecPlanOverwriteMode = .no_diff,
+    verbose: bool = false,
+    script: bool = false,
 };
 
-pub fn execPlan(plan: Planner, flags: ExecPlanFlags) !void {
+pub fn execPlan(allocator: Allocator, manifest_log: Manifest, manifest: Manifest, flags: ExecPlanFlags) !void {
     const stdout = std.io.getStdOut().writer();
     const stderr = std.io.getStdErr().writer();
+    var abort = false;
+    var scriptBuf = std.ArrayList(u8).init(allocator);
+    defer scriptBuf.deinit();
+    var scriptWriter = scriptBuf.writer();
 
-    if (flags.dry) try stderr.print("INFO: Dry run\n", .{});
+    const dry = flags.dry or flags.script;
+    if (dry) try stderr.print("INFO: Dry run\n", .{});
+
+    var verified_log = try verify(allocator, "", manifest_log);
+    defer verified_log.deinit();
+    // try stderr.print("verified_log: {}\n", .{verified_log});
+    // try stderr.print("manifest_log: {}\n", .{manifest_log});
+
+    var log_diff = try Planner.init(allocator, verified_log, manifest_log);
+    defer log_diff.deinit();
+
+    // TODO: Check if changed symlinks are in planned update, if not don't abort
+    if (log_diff.update.len > 0) {
+        for (log_diff.update) |link| {
+            try stderr.print("INFO: Symlink changed: {}\n", .{link});
+        }
+        if (flags.overwrite_mode == .no_diff) {
+            abort = true;
+        }
+    }
+
+    var plan = try Planner.init(allocator, verified_log, manifest);
+    defer plan.deinit();
+
+    if (flags.verbose) {
+        for (plan.noop) |link| {
+            try stderr.print("  = {}\n", .{link});
+        }
+    }
 
     for (plan.add) |link| {
         if (fs.accessAbsolute(link.path, .{})) |_| {
             switch (flags.overwrite_mode) {
                 .no_diff => {
-                    try stderr.print("INFO: Symlink '{s}' already exists\n", .{link.path});
-                    return Error.OverwriteModeNoDiff;
+                    try stderr.print("INFO: Symlink already exists: {}\n", .{link});
+                    abort = true;
                 },
                 .overwrite => {
-                    try stderr.print("INFO: Overwriting symlink '{s}'\n", .{link.path});
-                    if (!flags.dry) {
+                    try stderr.print("INFO: Overwrite symlink '{s}'\n", .{link.path});
+                    if (!dry) {
                         try fs.deleteFileAbsolute(link.path);
                     }
+                    try scriptWriter.print("rm '{s}'\n", .{link.path});
                 },
                 .move => {
                     // TODO: move file
@@ -351,24 +385,45 @@ pub fn execPlan(plan: Planner, flags: ExecPlanFlags) !void {
         } else |_| {}
     }
 
+    if (abort) {
+        return Error.InconsistentState;
+    }
+
     for (plan.remove) |link| {
-        if (!flags.dry) try fs.deleteFileAbsolute(link.path);
-        try stdout.print("  - {}\n", .{link});
+        if (!dry) try fs.deleteFileAbsolute(link.path);
+        if (flags.script) {
+            try scriptWriter.print("rm '{s}'\n", .{link.path});
+        } else {
+            try stderr.print("  - {}\n", .{link});
+        }
     }
 
     for (plan.add) |link| {
-        if (!flags.dry) {
+        if (!dry) {
             try fs.symLinkAbsolute(link.target, link.path, .{});
         }
-        try stdout.print("  + {}\n", .{link});
+        if (flags.script) {
+            try scriptWriter.print("ln -sT '{s}' '{s}'\n", .{ link.target, link.path });
+        } else {
+            try stderr.print("  + {}\n", .{link});
+        }
     }
 
     for (plan.update) |uplink| {
-        if (!flags.dry) {
+        if (!dry) {
             try fs.deleteFileAbsolute(uplink.path);
             try fs.symLinkAbsolute(uplink.new_target, uplink.path, .{});
         }
-        try stdout.print("  ~ {}\n", .{uplink});
+        if (flags.script) {
+            try scriptWriter.print("rm '{s}'\n", .{uplink.path});
+            try scriptWriter.print("ln -sT '{s}' '{s}'\n", .{ uplink.new_target, uplink.path });
+        } else {
+            try stderr.print("  ~ {}\n", .{uplink});
+        }
+    }
+
+    if (flags.script) {
+        try stdout.writeAll(scriptBuf.items);
     }
 }
 
@@ -383,44 +438,44 @@ test "verify manifest" {
     var buf: [MAX_PATH_BYTES]u8 = undefined;
     const abs_base = try tmp.dir.realpath(".", &buf);
 
-    const matrix = [_]struct { []Link, Manifest }{
+    const matrix = [_]struct { []const Link, Manifest }{
         .{
-            @constCast(&[_]Link{
+            &.{
+                .{ .target = "target1", .path = "path1" },
+            },
+            try Manifest.initLinks(allocator, &.{
                 .{ .target = "target1", .path = "path1" },
             }),
-            try Manifest.initLinks(allocator, @constCast(&[_]Link{
-                .{ .target = "target1", .path = "path1" },
-            })),
         },
         .{
-            @constCast(&[_]Link{
+            &.{
+                .{ .target = "target1", .path = "path1" },
+                .{ .target = "target3", .path = "path3" },
+            },
+            try Manifest.initLinks(allocator, &.{
                 .{ .target = "target1", .path = "path1" },
                 .{ .target = "target3", .path = "path3" },
             }),
-            try Manifest.initLinks(allocator, @constCast(&[_]Link{
+        },
+        .{
+            &.{
+                .{ .target = "target1", .path = "path1" },
+                .{ .target = "target2", .path = "path2" },
+            },
+            try Manifest.initLinks(allocator, &.{
+                .{ .target = "target1", .path = "path1" },
+            }),
+        },
+        .{
+            &.{
+                .{ .target = "target1", .path = "path1" },
+                .{ .target = "target2", .path = "path2" },
+                .{ .target = "target5", .path = "path3" },
+            },
+            try Manifest.initLinks(allocator, &.{
                 .{ .target = "target1", .path = "path1" },
                 .{ .target = "target3", .path = "path3" },
-            })),
-        },
-        .{
-            @constCast(&[_]Link{
-                .{ .target = "target1", .path = "path1" },
-                .{ .target = "target2", .path = "path2" },
             }),
-            try Manifest.initLinks(allocator, @constCast(&[_]Link{
-                .{ .target = "target1", .path = "path1" },
-            })),
-        },
-        .{
-            @constCast(&[_]Link{
-                .{ .target = "target1", .path = "path1" },
-                .{ .target = "target2", .path = "path2" },
-                .{ .target = "target5", .path = "path3" },
-            }),
-            try Manifest.initLinks(allocator, @constCast(&[_]Link{
-                .{ .target = "target1", .path = "path1" },
-                .{ .target = "target5", .path = "path3" },
-            })),
         },
     };
     defer for (matrix) |row| {
@@ -505,17 +560,17 @@ test "resolve link" {
     var buf: [MAX_PATH_BYTES]u8 = undefined;
     const abs_base = try tmp.dir.realpath(".", &buf);
 
-    const matrix = [_]struct { Link, Error![]Link }{
+    const matrix = [_]struct { Link, Error![]const Link }{
         .{
             .{ .target = "./*", .path = "path1" },
             Error.LinkPathMustBeDirWithGlob,
         },
         .{
             .{ .target = "./*", .path = "path1/" },
-            @constCast(&[_]Link{
+            &.{
                 .{ .target = "target1", .path = "path1/target1" },
                 .{ .target = "target3", .path = "path1/target3" },
-            }),
+            },
         },
     };
 
@@ -523,7 +578,7 @@ test "resolve link" {
         const link = row[0];
         const expect_links = row[1];
 
-        var result: Error![]Link = undefined;
+        var result: Error![]const Link = undefined;
         if (resolveLink(allocator, abs_base, link)) |r| {
             result = r;
         } else |err| {
@@ -583,7 +638,7 @@ pub const testing = struct {
         try std.testing.expectEqualStrings(exp.path, res_path);
     }
 
-    pub fn expectEqualLinks(allocator: Allocator, tmp_path: []const u8, exp: []Link, res: []Link) !void {
+    pub fn expectEqualLinks(allocator: Allocator, tmp_path: []const u8, exp: []const Link, res: []const Link) !void {
         try std.testing.expectEqual(exp.len, res.len);
         for (exp, 0..) |link, i| {
             const link_ = res[i];

@@ -11,9 +11,15 @@ const Parser = @import("parser.zig").Parser;
 const Manifest = @import("planner.zig").Manifest;
 const Planner = @import("planner.zig").Planner;
 
-const Error = error{
-    SymlinkChanged,
-    SymlinkAlreadyExists,
+// const Error = error{
+//     SymlinkChanged,
+//     SymlinkAlreadyExists,
+// };
+
+const ExitCodes = enum(u8) {
+    generic = 1,
+    invalid_option = 2,
+    inconsistent_state = 3,
 };
 
 fn usage() !void {
@@ -30,7 +36,7 @@ fn usage() !void {
 }
 
 const ErrFlags = struct {
-    code: u8 = 1,
+    code: ExitCodes = .generic,
     usage: bool = false,
 };
 
@@ -42,81 +48,90 @@ fn err(comptime msg: []const u8, values: anytype, flags: ErrFlags) !void {
     if (flags.usage) {
         try usage();
     }
-    std.process.exit(flags.code);
+    std.process.exit(@intFromEnum(flags.code));
 }
 
 fn eql(a: []const u8, b: []const u8) bool {
     return std.mem.eql(u8, a, b);
 }
 
-pub fn main() !void {
-    // const stdout = std.io.getStdOut().writer();
-    const stderr = std.io.getStdErr().writer();
+// const CommandFlags = struct {
+//     verbose: bool = false,
+// };
 
-    var flags: resolve.ExecPlanFlags = .{
-        .overwrite_mode = .no_diff,
-        .dry = false,
-    };
+pub fn main() !void {
+    const stdout = std.io.getStdOut().writer();
+    var exec_flags: resolve.ExecPlanFlags = .{};
 
     var args = std.process.args();
     _ = args.next();
     while (args.next()) |arg| {
-        if (eql(arg, "--help") or eql(arg, "-h")) {
+        if (eql(arg, "-h") or eql(arg, "--help")) {
             try usage();
             std.process.exit(1);
-        } else if (eql(arg, "--dry") or eql(arg, "-n")) {
-            flags.dry = true;
-        } else if (eql(arg, "--overwrite") or eql(arg, "-o")) {
-            flags.overwrite_mode = .overwrite;
+        } else if (eql(arg, "-n") or eql(arg, "--dry")) {
+            exec_flags.dry = true;
+        } else if (eql(arg, "-o") or eql(arg, "--overwrite")) {
+            exec_flags.overwrite_mode = .overwrite;
+        } else if (eql(arg, "-v") or eql(arg, "--verbose")) {
+            exec_flags.verbose = true;
+        } else if (eql(arg, "-s") or eql(arg, "--script")) {
+            exec_flags.script = true;
         } else {
-            try err("No option '{s}'", .{arg}, .{ .usage = true, .code = 2 });
+            try err("No option '{s}'", .{arg}, .{ .usage = true, .code = .invalid_option });
         }
     }
 
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
 
-    var manifest_log = (try resolve.readManifests(allocator, &[_][]const u8{
-        "./manifest.log.zink",
-    })).?;
-    defer manifest_log.deinit();
+    const home_env = std.posix.getenv("HOME").?;
 
-    var manifest = (try resolve.readManifests(allocator, &[_][]const u8{
-        "/home/icetan/.ln-conf",
-        "/home/icetan/.nix-profile/etc/ln-conf.d/*",
-    })).?;
-    defer manifest.deinit();
+    var zink_paths = std.ArrayList([]const u8).init(allocator);
+    defer zink_paths.deinit();
 
-    var verified_log = try resolve.verify(allocator, "", manifest_log);
-    defer verified_log.deinit();
-    var log_diff = try Planner.init(allocator, verified_log, manifest_log);
-    defer log_diff.deinit();
-
-    var verified_manifest = try resolve.verify(allocator, "", manifest);
-    defer verified_manifest.deinit();
-
-    var planner = try Planner.init(allocator, verified_log, manifest);
-    defer planner.deinit();
-    // std.debug.print("log_diff: {}\n", .{log_diff});
-    // std.debug.print("planner: {}\n", .{planner});
-
-    if (flags.overwrite_mode == .no_diff and log_diff.update.len > 0) {
-        // return Error.SymlinkChanged;
-        for (log_diff.update) |link| {
-            try stderr.print("File not consistent with previous run: {}\n", .{link});
-        }
-        try err("Inconsistent state, use --overwrite to ignore this", .{}, .{ .code = 4 });
+    if (std.posix.getenv("ZINK_PATH")) |path_env| {
+        var zink_path_iter = std.mem.split(u8, path_env, ":");
+        while (zink_path_iter.next()) |zp| try zink_paths.append(zp);
+    } else {
+        const zink_path = try std.mem.concat(allocator, u8, &.{ home_env, "/.zink" });
+        try zink_paths.append(zink_path);
     }
 
-    resolve.execPlan(planner, flags) catch |e| {
+    var log_path: []const u8 = undefined;
+    if (std.posix.getenv("ZINK_LOG_PATH")) |path_env| {
+        log_path = path_env;
+    } else {
+        log_path = try std.mem.concat(allocator, u8, &.{ home_env, "/.zink.state" });
+    }
+    // Read current state
+    var manifest_log = (try resolve.readManifests(allocator, &.{log_path})).?;
+    defer manifest_log.deinit();
+
+    // Read manifest files
+    var manifest = (try resolve.readManifests(allocator, zink_paths.items)).?;
+    defer manifest.deinit();
+
+    // Execute plan
+    resolve.execPlan(allocator, manifest_log, manifest, exec_flags) catch |e| {
         switch (e) {
-            resolve.Error.OverwriteModeNoDiff => {
-                try err("Inconsistent state, use --overwrite to ignore this", .{}, .{ .code = 4 });
+            resolve.Error.OverwriteModeNoDiff, resolve.Error.InconsistentState => {
+                try err("Inconsistent state, use --overwrite to ignore this", .{}, .{ .code = .inconsistent_state });
             },
             else => return e,
         }
     };
-    if (!flags.dry) {
-        try resolve.saveManifestFile(manifest, "./manifest.log.zink");
+
+    // Save state
+    if (!exec_flags.dry and !exec_flags.script) {
+        try resolve.saveManifestFile(manifest, log_path);
+    }
+    // Print new state log to stdout if script mode
+    if (exec_flags.script) {
+        var buf: [MAX_PATH_BYTES]u8 = undefined;
+        const abs_log_path = try std.fs.cwd().realpath(log_path, &buf);
+        try stdout.print("echo >{s} '\\\n", .{abs_log_path});
+        try manifest.save(stdout);
+        try stdout.writeAll("'\n");
     }
 }

@@ -14,7 +14,7 @@ pub const Manifest = struct {
     links: std.ArrayList(Link),
     allocator: Allocator,
 
-    pub fn initLinks(allocator: Allocator, ls: []Link) !@This() {
+    pub fn initLinks(allocator: Allocator, ls: []const Link) !@This() {
         // var links = std.StringArrayHashMap(Link).init(allocator);
         var links = std.ArrayList(Link).init(allocator);
 
@@ -96,10 +96,10 @@ pub const Manifest = struct {
 };
 
 pub const Planner = struct {
-    noop: []Link,
-    add: []Link,
-    remove: []Link,
-    update: []UpdateLink,
+    noop: []const Link,
+    add: []const Link,
+    remove: []const Link,
+    update: []const UpdateLink,
     allocator: ?Allocator = null,
 
     pub const UpdateLink = struct {
@@ -116,7 +116,7 @@ pub const Planner = struct {
         }
 
         pub fn toLink(self: @This(), allocator: Allocator) !Link {
-            return Link.init(allocator, self.target, self.path);
+            return Link.init(allocator, self.new_target, self.path);
         }
 
         pub fn eql(self: @This(), other: @This()) bool {
@@ -197,10 +197,10 @@ pub const Planner = struct {
         }
 
         return .{
-            .noop = try allocator.dupe(Link, noop.items),
-            .add = try allocator.dupe(Link, add.items),
-            .remove = try allocator.dupe(Link, remove.items),
-            .update = try allocator.dupe(UpdateLink, update.items),
+            .noop = try noop.toOwnedSlice(),
+            .add = try add.toOwnedSlice(),
+            .remove = try remove.toOwnedSlice(),
+            .update = try update.toOwnedSlice(),
             .allocator = allocator,
         };
     }
@@ -290,14 +290,14 @@ test "simple planner" {
     const allocator = std.testing.allocator;
 
     const expect = Planner{
-        .noop = @constCast(&[_]Link{.{ .target = "target1", .path = "path1" }}),
-        .add = @constCast(&[_]Link{.{ .target = "target4", .path = "path4" }}),
-        .remove = @constCast(&[_]Link{.{ .target = "target2", .path = "path2" }}),
-        .update = @constCast(&[_]Planner.UpdateLink{.{
+        .noop = &.{.{ .target = "target1", .path = "path1" }},
+        .add = &.{.{ .target = "target4", .path = "path4" }},
+        .remove = &.{.{ .target = "target2", .path = "path2" }},
+        .update = &.{.{
             .target = "target3",
             .path = "path3",
             .new_target = "target5",
-        }}),
+        }},
     };
 
     var current = [_]Link{
@@ -336,16 +336,16 @@ test "manifest append" {
 
     const matrix = [_]struct { m1: Manifest, m2: Manifest, expect: Manifest }{
         .{
-            .m1 = try Manifest.initLinks(allocator, @constCast(&[_]Link{
+            .m1 = try Manifest.initLinks(allocator, &.{
                 .{ .target = "target1", .path = "path1" },
-            })),
-            .m2 = try Manifest.initLinks(allocator, @constCast(&[_]Link{
+            }),
+            .m2 = try Manifest.initLinks(allocator, &.{
                 .{ .target = "target2", .path = "path2" },
-            })),
-            .expect = try Manifest.initLinks(allocator, @constCast(&[_]Link{
+            }),
+            .expect = try Manifest.initLinks(allocator, &.{
                 .{ .target = "target1", .path = "path1" },
                 .{ .target = "target2", .path = "path2" },
-            })),
+            }),
         },
     };
 

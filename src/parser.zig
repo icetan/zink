@@ -162,7 +162,7 @@ test "parse simple manifest" {
             \\path2:/mjau/$HOME/home
             \\
             ,
-            &[_]Link{
+            &.{
                 .{
                     .target = "./lol",
                     .path = "path0",
@@ -181,7 +181,7 @@ test "parse simple manifest" {
             \\$HOME:./target1
             \\path2:$HOME/target2
             ,
-            &[_]Link{
+            &.{
                 .{
                     .target = "./target1",
                     .path = "_HOME_",
