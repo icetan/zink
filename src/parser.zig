@@ -93,7 +93,6 @@ pub const Parser = struct {
     }
 
     fn makeLink(self: *@This(), allocator: Allocator) !?Link {
-
         if (self.target.items.len == 0) return null;
         const path = try self.makePath(allocator);
         defer allocator.free(path);
@@ -154,58 +153,77 @@ pub const Parser = struct {
 
 test "parse simple manifest" {
     const allocator = std.testing.allocator;
-
-    const manifest =
-        \\ # comment 1
-        \\path0:./lol
-        \\# alsdfj
-        \\  path1  : trimit # hejhej
-        \\path2:/mjau/$HOME/home
-        \\
-    ;
-
-    const matrix = [_]Link{
+    const matrix = [_]struct { []const u8, []const Link }{
         .{
-            .target = "./lol",
-            .path = "path0",
+            \\ # comment 1
+            \\path0:./lol
+            \\# alsdfj
+            \\  path1  : trimit # hejhej
+            \\path2:/mjau/$HOME/home
+            \\
+            ,
+            &[_]Link{
+                .{
+                    .target = "./lol",
+                    .path = "path0",
+                },
+                .{
+                    .target = "trimit",
+                    .path = "path1",
+                },
+                .{
+                    .target = "/mjau/_HOME_/home",
+                    .path = "path2",
+                },
+            },
         },
         .{
-            .target = "trimit",
-            .path = "path1",
-        },
-        .{
-            .target = "/mjau/_HOME_/home",
-            .path = "path2",
+            \\$HOME:./target1
+            \\path2:$HOME/target2
+            ,
+            &[_]Link{
+                .{
+                    .target = "./target1",
+                    .path = "_HOME_",
+                },
+                .{
+                    .target = "_HOME_/target2",
+                    .path = "path2",
+                },
+            },
         },
     };
-
-    const tokenizer = try Tokenizer.init(allocator, manifest);
-    defer tokenizer.deinit();
 
     const EnvLookup = struct {
         pub fn lookup(_: []const u8) ?[]const u8 {
             return "_HOME_";
         }
     };
-
-    var parser = Parser.init(allocator, tokenizer, EnvLookup.lookup);
-    defer parser.deinit();
-
     for (matrix) |row| {
+        const manifest = row[0];
+        const expect = row[1];
+
+        const tokenizer = try Tokenizer.init(allocator, manifest);
+        defer tokenizer.deinit();
+
+        var parser = Parser.init(allocator, tokenizer, EnvLookup.lookup);
+        defer parser.deinit();
+
+        for (expect) |ex_link| {
+            if (try parser.next(allocator)) |link| {
+                defer link.deinit(allocator);
+                try std.testing.expectEqualStrings(ex_link.target, link.target);
+                try std.testing.expectEqualStrings(ex_link.path, link.path);
+            } else {
+                // Too few lines in manifest
+                try std.testing.expect(false);
+            }
+        }
         if (try parser.next(allocator)) |link| {
             defer link.deinit(allocator);
-            try std.testing.expectEqualStrings(row.target, link.target);
-            try std.testing.expectEqualStrings(row.path, link.path);
-        } else {
-            // Too few lines in manifest
+            // Lines in manifest untested against matrix
             try std.testing.expect(false);
         }
-    }
-
-    if (try parser.next(allocator)) |link| {
-        defer link.deinit(allocator);
-        // Lines in manifest untested against matrix
-        try std.testing.expect(false);
     }
 }
 

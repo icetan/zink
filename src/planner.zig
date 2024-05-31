@@ -142,6 +142,10 @@ pub const Planner = struct {
     };
 
     pub fn init(allocator: Allocator, current: Manifest, next: Manifest) !@This() {
+        // TODO: Add conflicting paths in manifest to Planner struct.
+        // var conflict = std.ArrayList([]const u8).init(allocator);
+        // defer conflict.deinit();
+
         var current_map = std.StringHashMap(Link).init(allocator);
         defer current_map.deinit();
         for (current.links.items) |l| try current_map.put(l.path, l);

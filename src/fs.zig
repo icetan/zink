@@ -184,9 +184,9 @@ fn verifyLink(allocator: Allocator, path: []const u8, link: Link) !DiffLink {
     } else {
         return .{ .changed = try UpdateLink.init(
             allocator,
-            current_target,
-            abs_path,
             abs_target,
+            abs_path,
+            current_target,
         ) };
     }
 }
@@ -419,7 +419,7 @@ test "verify manifest" {
             }),
             try Manifest.initLinks(allocator, @constCast(&[_]Link{
                 .{ .target = "target1", .path = "path1" },
-                .{ .target = "target3", .path = "path3" },
+                .{ .target = "target5", .path = "path3" },
             })),
         },
     };
@@ -472,9 +472,9 @@ test "verify link" {
         .{ .{ .target = "target1", .path = "path2" }, .{ .missing = {} } },
         .{ .{ .target = "target2", .path = "path2" }, .{ .missing = {} } },
         .{ .{ .target = "target3", .path = "path1" }, .{ .changed = .{
-            .target = "target1",
+            .target = "target3",
             .path = "path1",
-            .new_target = "target3",
+            .new_target = "target1",
         } } },
     };
 

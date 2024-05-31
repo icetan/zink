@@ -16,7 +16,9 @@ const Error = error{
     SymlinkAlreadyExists,
 };
 
-fn usage(pname: []const u8) !void {
+fn usage() !void {
+    var args = std.process.args();
+    const pname = args.next().?;
     try std.io.getStdErr().writer().print(
         \\Usage: {s} [OPTIONS]
         \\  --dry, -n
@@ -27,12 +29,20 @@ fn usage(pname: []const u8) !void {
     std.process.exit(1);
 }
 
-fn err(code: u8, comptime msg: []const u8, values: anytype) !void {
+const ErrFlags = struct {
+    code: u8 = 1,
+    usage: bool = false,
+};
+
+fn err(comptime msg: []const u8, values: anytype, flags: ErrFlags) !void {
     const stderr = std.io.getStdErr().writer();
     try stderr.print("ERROR: ", .{});
     try stderr.print(msg, values);
     try stderr.print("\n", .{});
-    std.process.exit(code);
+    if (flags.usage) {
+        try usage();
+    }
+    std.process.exit(flags.code);
 }
 
 fn eql(a: []const u8, b: []const u8) bool {
@@ -49,18 +59,17 @@ pub fn main() !void {
     };
 
     var args = std.process.args();
-    const pname: []const u8 = args.next().?;
+    _ = args.next();
     while (args.next()) |arg| {
         if (eql(arg, "--help") or eql(arg, "-h")) {
-            try usage(pname);
+            try usage();
+            std.process.exit(1);
         } else if (eql(arg, "--dry") or eql(arg, "-n")) {
             flags.dry = true;
         } else if (eql(arg, "--overwrite") or eql(arg, "-o")) {
             flags.overwrite_mode = .overwrite;
         } else {
-            // try stderr.print("ERROR: No option '{s}'\n", .{arg});
-            // std.process.exit(2);
-            try err(2, "No option {s}", .{arg});
+            try err("No option '{s}'", .{arg}, .{ .usage = true, .code = 2 });
         }
     }
 
@@ -96,13 +105,13 @@ pub fn main() !void {
         for (log_diff.update) |link| {
             try stderr.print("File not consistent with previous run: {}\n", .{link});
         }
-        try err(3, "Inconsistent state, use --overwrite to ignore this.", .{});
+        try err("Inconsistent state, use --overwrite to ignore this", .{}, .{ .code = 4 });
     }
 
     resolve.execPlan(planner, flags) catch |e| {
         switch (e) {
             resolve.Error.OverwriteModeNoDiff => {
-                try err(4, "Inconsistent state, use --overwrite to ignore this.", .{});
+                try err("Inconsistent state, use --overwrite to ignore this", .{}, .{ .code = 4 });
             },
             else => return e,
         }

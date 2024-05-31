@@ -121,6 +121,7 @@ pub const Tokenizer = struct {
                 },
                 .divider => switch (cp) {
                     '\n', ':', '#' => return Error.NotAllowedAfterDivider,
+                    '$' => .pre_target_env,
                     else => .target,
                 },
                 .target => switch (cp) {
@@ -216,6 +217,7 @@ test "tokanize other manifest" {
         \\  path1  : trimit # hejhej
         \\path2:/mjau/$HOME/home
         \\$HOME/path3:../target3
+        \\path4:$HOME/target4
         \\
     ;
 
@@ -250,6 +252,12 @@ test "tokanize other manifest" {
         .{ .divider, ":" },
         .{ .target, "../target3" },
         .{ .newline, "\n" },
+        .{ .path, "path4" },
+        .{ .divider, ":" },
+        .{ .pre_target_env, "$" },
+        .{ .target_env, "HOME" },
+        .{ .target, "/target4" },
+        .{ .newline, "\n" },
     };
 
     var tokenizer = try Tokenizer.init(allocator, manifest);
@@ -258,11 +266,13 @@ test "tokanize other manifest" {
     for (matrix) |row| {
         if (try tokenizer.next(allocator)) |token| {
             defer token.deinit(allocator);
-            // std.debug.print("token({d})={any}\n", .{ i, token });
-            try std.testing.expectEqual(
+            std.testing.expectEqual(
                 row[0],
                 token.tag,
-            );
+            ) catch |err| {
+                std.debug.print("got: {any}\n", .{token});
+                return err;
+            };
             try std.testing.expectEqualStrings(row[1], token.text);
         } else {
             try std.testing.expect(false);
