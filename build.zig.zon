@@ -1,11 +1,11 @@
 .{
-    .name = "zig",
+    .name = "zink",
     .version = "0.0.0",
     .dependencies = .{
         .@"glob-zig" = .{
-            .url = "https://github.com/icetan/glob-zig/archive/main.tar.gz",
-            .hash = "122009122341200514961d7b8215b07ef5b9ff4db61eeb5cd2a4949716d14761373a",
-            // .path = "../glob-zig",
+            // .url = "https://github.com/icetan/glob-zig/archive/main.tar.gz",
+            // .hash = "122009122341200514961d7b8215b07ef5b9ff4db61eeb5cd2a4949716d14761373a",
+            .path = "./vendor/glob-zig",
         },
     },
     .paths = .{

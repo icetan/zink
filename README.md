@@ -11,3 +11,9 @@ zig build run
 ```sh
 zig build test -Dtest-filter=fs -Dtest-filter=...
 ```
+
+## Release Build
+
+```sh
+zig build -Doptimize=ReleaseSmall
+```
