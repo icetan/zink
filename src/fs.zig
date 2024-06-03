@@ -244,6 +244,16 @@ pub fn readFile(allocator: Allocator, file_path: []const u8) ![]const u8 {
     return try file.readToEndAlloc(allocator, 1000 * 1000 * 5); // Max 5MB file size
 }
 
+pub fn exists(file_path: []const u8) bool {
+    var buf: [MAX_PATH_BYTES]u8 = undefined;
+    if (fs.cwd().readLink(file_path, &buf)) |_|
+        return true
+    else |_|
+        {}
+    fs.cwd().access(file_path, .{}) catch {};
+    return false;
+}
+
 pub fn manifestFromPath(allocator: Allocator, path: []const u8) !Manifest {
     var buf: [MAX_PATH_BYTES]u8 = undefined;
     const manifest_path = std.fs.cwd().realpath(path, &buf) catch |err| {
@@ -346,8 +356,11 @@ pub fn execPlan(allocator: Allocator, log_path: []const u8, manifest_paths: []co
 
     if (flags.verbose and dry) try stderr.print("info: Dry run\n", .{});
 
-    // Read log (current state)
-    var manifest_log = (try readManifests(allocator, &.{log_path})).?;
+    // Read log, create if doesn't exist (current state)
+    if (!exists(log_path)) {
+        (try fs.cwd().createFile(log_path, .{})).close();
+    }
+    var manifest_log = try manifestFromPath(allocator, log_path);
     defer manifest_log.deinit();
 
     // Verify log file against file system
@@ -386,7 +399,10 @@ pub fn execPlan(allocator: Allocator, log_path: []const u8, manifest_paths: []co
     }
 
     for (plan.add) |link| {
-        if (fs.accessAbsolute(link.path, .{})) |_| {
+        // print("check if exists {s}\n", .{link.path});
+        if (exists(link.path)) {
+            // print("exists {s}\n", .{link.path});
+
             switch (flags.overwrite_mode) {
                 .no_diff => {
                     try stderr.print("info: Symlink already exists: {}\n", .{link});
@@ -404,7 +420,7 @@ pub fn execPlan(allocator: Allocator, log_path: []const u8, manifest_paths: []co
                     @panic("Move has not been implemented");
                 },
             }
-        } else |_| {}
+        }
     }
 
     if (abort) {
