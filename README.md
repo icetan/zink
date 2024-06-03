@@ -1,6 +1,20 @@
 # zink
 
-## Bulild/Run
+## Install With Nix
+
+```sh
+nix profile install github:icetan/zink
+```
+
+## Usage
+
+```sh
+echo > ~/.zink '\
+$HOME
+' >
+```
+
+## Build/Run
 
 ```sh
 zig build run

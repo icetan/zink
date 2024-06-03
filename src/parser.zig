@@ -1,21 +1,22 @@
 const std = @import("std");
-const tknzr = @import("tokenizer.zig");
 
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 const Utf8Iterator = std.unicode.Utf8Iterator;
+const print = std.debug.print;
 
-const Token = tknzr.Token;
-const Tokenizer = tknzr.Tokenizer;
+const Lexer = @import("lexer.zig").Lexer;
+const Token = @import("lexer.zig").Token;
+const TokenTag = @import("lexer.zig").TokenTag;
 
 const Error = error{
-    NotAllowedOrder,
+    IllegalToken,
+    NoCompleteSymlink,
 };
 
 const State = enum {
-    start,
-    symlink_begin,
-    symlink_end,
+    path,
+    target,
 };
 
 const PathState = enum {
@@ -34,6 +35,11 @@ pub const Link = struct {
         };
     }
 
+    pub fn deinit(self: @This(), allocator: Allocator) void {
+        allocator.free(self.target);
+        allocator.free(self.path);
+    }
+
     pub fn clone(self: @This(), allocator: Allocator) !@This() {
         return @This().init(allocator, self.target, self.path);
     }
@@ -50,104 +56,141 @@ pub const Link = struct {
     ) !void {
         _ = try writer.print("{s} -> {s}", .{ self.path, self.target });
     }
-
-    pub fn deinit(self: @This(), allocator: Allocator) void {
-        allocator.free(self.target);
-        allocator.free(self.path);
-    }
 };
 
 pub const Parser = struct {
-    path: ArrayList(u8),
-    target: ArrayList(u8),
-    tokenizer: Tokenizer,
-    state: State = .start,
+    path: ?[]const u8 = null,
+    state: State = .path,
+    lexer: *Lexer,
+    text: ArrayList(u8),
+    token: ?Token = null,
+    // XXX: WWWWHHHHYYYY doesn't null check work for self.token?????????
+    deinitToken: bool = false,
     envLookup: *const EnvLookup,
+    allocator: Allocator,
 
     const EnvLookup = fn ([]const u8) ?[]const u8;
 
-    pub fn init(allocator: Allocator, tokenizer: Tokenizer, env_lookup: *const EnvLookup) @This() {
-        return .{
-            .tokenizer = tokenizer,
-            .path = ArrayList(u8).init(allocator),
-            .target = ArrayList(u8).init(allocator),
+    pub fn init(allocator: Allocator, lexer: *Lexer, env_lookup: *const EnvLookup) !@This() {
+        return @This(){
+            .lexer = lexer,
+            .text = ArrayList(u8).init(allocator),
             .envLookup = env_lookup,
+            .allocator = allocator,
+            .token = try lexer.next(allocator),
         };
     }
 
-    pub fn deinit(self: @This()) void {
-        self.path.deinit();
-        self.target.deinit();
+    pub fn deinit(self: *@This()) void {
+        self.text.deinit();
+        // print("Parser.deinit free self.token {any}\n", .{self.token});
+        // print("Parser.deinit free self.deinitToken {any}\n", .{self.deinitToken});
+
+        // XXX: How can I use self.token nullable to check if we need to deinit?
+        // if (self.token) |token| token.deinit(self.allocator);
+        if (self.deinitToken) self.token.?.deinit(self.allocator);
+
+        // print("Parser.deinit free self.path {any}\n", .{self.path});
+        if (self.path) |path| self.allocator.free(path);
     }
 
-    fn makePath(self: *@This(), allocator: Allocator) ![]const u8 {
-        const text = try allocator.dupe(u8, self.path.items);
-        self.path.clearAndFree();
+    fn makeText(self: *@This()) ![]const u8 {
+        const text = self.allocator.dupe(u8, self.text.items);
+        self.text.clearAndFree();
         return text;
     }
 
-    fn makeTarget(self: *@This(), allocator: Allocator) ![]const u8 {
-        const text = try allocator.dupe(u8, self.target.items);
-        self.target.clearAndFree();
-        return text;
+    fn noText(self: *@This()) bool {
+        return std.mem.eql(u8, "", std.mem.trim(u8, self.text.items, " "));
+    }
+
+    fn skip(self: *@This()) !void {
+        if (self.token) |token| token.deinit(self.allocator);
+        self.token = try self.lexer.next(self.allocator);
+        self.deinitToken = self.token != null;
+        // print("Parser.skip AAAAHHH {any}\n", .{self.token});
+        // print("Parser.skip deinitToken {any}\n", .{self.deinitToken});
+    }
+
+    fn consume(self: *@This()) !void {
+        if (self.token) |token| {
+            try self.text.appendSlice(token.text);
+        }
+        try self.skip();
+    }
+
+    fn consumeEnv(self: *@This()) !void {
+        if (self.token) |token| {
+            try self.appendEnvLookup(token.text);
+        }
+        try self.skip();
+    }
+
+    fn appendEnvLookup(self: *@This(), env: []const u8) !void {
+        const env_text = self.envLookup(env).?;
+        try self.text.appendSlice(env_text);
+    }
+
+    fn makePath(self: *@This()) !void {
+        self.path = try self.makeText();
+        self.state = .target;
     }
 
     fn makeLink(self: *@This(), allocator: Allocator) !?Link {
-        if (self.target.items.len == 0) return null;
-        const path = try self.makePath(allocator);
-        defer allocator.free(path);
-        const target = try self.makeTarget(allocator);
-        defer allocator.free(target);
-        return try Link.init(allocator, target, path);
+        if (self.state == .path or self.path == null or self.noText())
+            return null;
+
+        self.state = .path;
+        if (self.path) |path| {
+            const target = try self.makeText();
+            defer {
+                self.allocator.free(target);
+                self.allocator.free(path);
+            }
+            self.path = null;
+            return try Link.init(allocator, target, path);
+        }
+        return null;
     }
 
     pub fn next(self: *@This(), allocator: Allocator) !?Link {
-        var link: ?Link = null;
-        var env_text: ?[]const u8 = null;
-        // defer if (env_text) |x| { allocator.free(x); };
+        while (self.token) |token| {
+            // print("{s}: token={}\n", .{ @tagName(self.state), token });
 
-        while (link == null) {
-            if (try self.tokenizer.next(allocator)) |token| {
-                defer token.deinit(allocator);
-                const tag = token.tag;
-
-                switch (self.state) {
-                    .start, .symlink_end => switch (tag) {
-                        .path => {
-                            try self.path.appendSlice(token.text);
-                        },
-                        .divider => {
-                            self.state = .symlink_begin;
-                        },
-                        .path_env => {
-                            env_text = self.envLookup(token.text);
-                            try self.path.appendSlice(env_text.?);
-                        },
-                        .target, .target_env => return Error.NotAllowedOrder,
-                        else => {},
+            try switch (token.tag) {
+                .path => self.consume(),
+                .env => self.consumeEnv(),
+                .home => {
+                    try self.appendEnvLookup("HOME");
+                    try self.skip();
+                },
+                .divider => switch (self.state) {
+                    .path => {
+                        try self.makePath();
+                        try self.skip();
                     },
-                    .symlink_begin => switch (tag) {
-                        .target => {
-                            try self.target.appendSlice(token.text);
-                        },
-                        .target_env => {
-                            env_text = self.envLookup(token.text);
-                            try self.target.appendSlice(env_text.?);
-                        },
-                        .newline => {
-                            link = try self.makeLink(allocator);
-                            self.state = .symlink_end;
-                        },
-                        .path, .path_env => return Error.NotAllowedOrder,
-                        else => {},
+                    .target => return Error.IllegalToken,
+                },
+                .newline => switch (self.state) {
+                    .path => if (self.noText())
+                        self.skip()
+                    else
+                        return Error.IllegalToken,
+                    .target => {
+                        try self.skip();
+                        return self.makeLink(allocator);
                     },
-                }
-            } else {
-                link = try self.makeLink(allocator);
-                break;
-            }
+                },
+                .comment => switch (self.state) {
+                    .path => if (self.noText())
+                        self.skip()
+                    else
+                        return Error.IllegalToken,
+                    .target => self.skip(),
+                },
+            };
         }
-        return link;
+        return self.makeLink(allocator);
     }
 };
 
@@ -194,19 +237,14 @@ test "parse simple manifest" {
         },
     };
 
-    const EnvLookup = struct {
-        pub fn lookup(_: []const u8) ?[]const u8 {
-            return "_HOME_";
-        }
-    };
     for (matrix) |row| {
         const manifest = row[0];
         const expect = row[1];
 
-        const tokenizer = try Tokenizer.init(allocator, manifest);
-        defer tokenizer.deinit();
+        var lexer = try Lexer.init(allocator, manifest);
+        defer lexer.deinit();
 
-        var parser = Parser.init(allocator, tokenizer, EnvLookup.lookup);
+        var parser = try Parser.init(allocator, &lexer, TestEnvLookup.lookup);
         defer parser.deinit();
 
         for (expect) |ex_link| {
@@ -234,6 +272,9 @@ test "parse manifest no trailing newline" {
         \\ # comment 1
         \\path1:target1
         \\path2:target2
+        \\$HOME/path3:$HOME/target3
+        \\~/path4:~/target4
+        // \\~:/~/target5
     ;
 
     const matrix = [_]Link{
@@ -245,22 +286,29 @@ test "parse manifest no trailing newline" {
             .target = "target2",
             .path = "path2",
         },
+        .{
+            .target = "_HOME_/target3",
+            .path = "_HOME_/path3",
+        },
+        .{
+            .target = "_HOME_/target4",
+            .path = "_HOME_/path4",
+        },
+        // .{
+        //     .target = "_HOME_",
+        //     .path = "/~/target5",
+        // },
     };
 
-    const tokenizer = try Tokenizer.init(allocator, manifest);
-    defer tokenizer.deinit();
+    var lexer = try Lexer.init(allocator, manifest);
+    defer lexer.deinit();
 
-    const EnvLookup = struct {
-        pub fn lookup(_: []const u8) ?[]const u8 {
-            return "_HOME_";
-        }
-    };
-
-    var parser = Parser.init(allocator, tokenizer, EnvLookup.lookup);
+    var parser = try Parser.init(allocator, &lexer, TestEnvLookup.lookup);
     defer parser.deinit();
 
     for (matrix) |row| {
         if (try parser.next(allocator)) |link| {
+            // print("link={}\n", .{link});
             defer link.deinit(allocator);
             try std.testing.expectEqualStrings(row.target, link.target);
             try std.testing.expectEqualStrings(row.path, link.path);
@@ -274,5 +322,48 @@ test "parse manifest no trailing newline" {
         defer link.deinit(allocator);
         // Lines in manifest untested against matrix
         try std.testing.expect(false);
+    }
+}
+
+const TestEnvLookup = struct {
+    pub fn lookup(_: []const u8) ?[]const u8 {
+        return "_HOME_";
+    }
+};
+
+test "parse fail" {
+    const allocator = std.testing.allocator;
+    const matrix = [_]struct { []const u8, Error }{
+        .{
+            \\ path1 # comment 1
+            \\path2:illegal:
+            \\
+            ,
+            Error.IllegalToken,
+        },
+    };
+
+    for (matrix) |row| {
+        const manifest = row[0];
+        const expect = row[1];
+
+        var lexer = try Lexer.init(allocator, manifest);
+        defer lexer.deinit();
+
+        var parser = try Parser.init(allocator, &lexer, TestEnvLookup.lookup);
+        defer parser.deinit();
+
+        while (true) {
+            if (parser.next(allocator)) |link| {
+                if (link) |_| {
+                    try std.testing.expect(false);
+                } else {
+                    break;
+                }
+            } else |err| {
+                try std.testing.expectEqual(expect, err);
+                break;
+            }
+        }
     }
 }

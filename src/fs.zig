@@ -15,7 +15,7 @@ const UpdateLink = planner.Planner.UpdateLink;
 const parser = @import("parser.zig");
 const Parser = parser.Parser;
 const Link = parser.Link;
-const Tokenizer = @import("tokenizer.zig").Tokenizer;
+const Lexer = @import("lexer.zig").Lexer;
 
 pub const Error = error{
     ManifestPathMustBeAbsolute,
@@ -99,7 +99,7 @@ pub fn getGlobIter(allocator: Allocator, path: []const u8) !?struct { Glob, std.
 
 fn resolveLink(allocator: Allocator, path: []const u8, link: Link) ![]const Link {
     var fs_links = std.ArrayList(Link).init(allocator);
-    defer fs_links.deinit();
+    errdefer fs_links.deinit();
 
     const path_is_dir = link.path[link.path.len - 1] == '/';
     const abs_path = try resolvePath(allocator, path, link.path);
@@ -195,7 +195,10 @@ fn verifyLink(allocator: Allocator, path: []const u8, link: Link) !DiffLink {
 
 pub fn verify(allocator: Allocator, path: []const u8, manifest: Manifest) !Manifest {
     var fs_links = std.ArrayList(Link).init(allocator);
-    defer fs_links.deinit();
+    defer {
+        for (fs_links.items) |link| link.deinit(allocator);
+        fs_links.deinit();
+    }
 
     for (manifest.links.items) |link| {
         const diff_link = try verifyLink(allocator, path, link);
@@ -212,32 +215,32 @@ pub fn verify(allocator: Allocator, path: []const u8, manifest: Manifest) !Manif
         }
     }
 
-    const fs_manifest = try Manifest.initLinks(allocator, fs_links.items);
-    defer for (fs_links.items) |link| {
-        link.deinit(allocator);
-    };
-
-    return fs_manifest;
+    return try Manifest.initLinks(allocator, fs_links.items);
 }
 
 pub fn resolve(allocator: Allocator, path: []const u8, manifest: Manifest) !Manifest {
     var links = std.ArrayList(Link).init(allocator);
-    defer links.deinit();
+    defer {
+        for (links.items) |link| link.deinit(allocator);
+        links.deinit();
+    }
 
     for (manifest.links.items) |link| {
         const resolved_links = try resolveLink(allocator, path, link);
+        defer allocator.free(resolved_links);
         try links.appendSlice(resolved_links);
     }
 
     return Manifest.initLinks(allocator, links.items);
 }
 
-pub fn readFile(allocator: Allocator, file_path: []const u8) ![]u8 {
+pub fn readFile(allocator: Allocator, file_path: []const u8) ![]const u8 {
     const dir = std.fs.cwd();
     const file = dir.openFile(file_path, .{}) catch |err| {
         print("Couldn't read file: '{s}'\n", .{file_path});
         return err;
     };
+    defer file.close();
     return try file.readToEndAlloc(allocator, 1000 * 1000 * 5); // Max 5MB file size
 }
 
@@ -251,8 +254,8 @@ pub fn manifestFromPath(allocator: Allocator, path: []const u8) !Manifest {
     const manifest_file = try readFile(allocator, manifest_path);
     defer allocator.free(manifest_file);
 
-    var tokenizer = try Tokenizer.init(allocator, manifest_file);
-    defer tokenizer.deinit();
+    var lexer = try Lexer.init(allocator, manifest_file);
+    defer lexer.deinit();
 
     const EnvLookup = struct {
         pub fn lookup(name: []const u8) ?[]const u8 {
@@ -260,10 +263,10 @@ pub fn manifestFromPath(allocator: Allocator, path: []const u8) !Manifest {
         }
     };
 
-    var p = Parser.init(allocator, tokenizer, EnvLookup.lookup);
+    var p = try Parser.init(allocator, &lexer, EnvLookup.lookup);
     defer p.deinit();
 
-    var manifest = try Manifest.init(allocator, p);
+    var manifest = try Manifest.init(allocator, &p);
     defer manifest.deinit();
 
     return try resolve(allocator, manifest_dir, manifest);
@@ -437,7 +440,8 @@ pub fn execPlan(allocator: Allocator, log_path: []const u8, manifest_paths: []co
         }
     }
 
-    const new_log = try plan.toManifest();
+    var new_log = try plan.toManifest();
+    defer new_log.deinit();
 
     // Save state
     if (!dry) {

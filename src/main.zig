@@ -6,15 +6,6 @@ const MAX_PATH_BYTES = std.fs.MAX_PATH_BYTES;
 const print = std.debug.print;
 
 const resolve = @import("fs.zig");
-const Tokenizer = @import("tokenizer.zig").Tokenizer;
-const Parser = @import("parser.zig").Parser;
-const Manifest = @import("planner.zig").Manifest;
-const Planner = @import("planner.zig").Planner;
-
-// const Error = error{
-//     SymlinkChanged,
-//     SymlinkAlreadyExists,
-// };
 
 const ExitCodes = enum(u8) {
     generic = 1,
@@ -68,6 +59,7 @@ fn eql(a: []const u8, b: []const u8) bool {
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
     var zink_paths = std.ArrayList([]const u8).init(allocator);

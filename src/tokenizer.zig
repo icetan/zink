@@ -20,6 +20,8 @@ pub const TokenTag = enum {
     target,
     pre_target_env,
     target_env,
+    path_home_dir,
+    target_home_dir,
 };
 
 pub const Token = struct {
@@ -93,6 +95,7 @@ pub const Tokenizer = struct {
                     '\n', ' ' => .newline,
                     '#' => .pre_comment,
                     '$' => .pre_path_env,
+                    '~' => .path_home_dir,
                     else => .path,
                 },
                 .pre_comment => switch (cp) {
@@ -122,6 +125,7 @@ pub const Tokenizer = struct {
                 .divider => switch (cp) {
                     '\n', ':', '#' => return Error.NotAllowedAfterDivider,
                     '$' => .pre_target_env,
+                    '~' => .target_home_dir,
                     else => .target,
                 },
                 .target => switch (cp) {
@@ -140,6 +144,8 @@ pub const Tokenizer = struct {
                     '/', ' ', ',', '.', '-', ':' => .target,
                     else => .target_env,
                 },
+                .path_home_dir => .path,
+                .target_home_dir => .target,
             };
 
             if (tag != .start and self.next_tag != tag) {
@@ -218,6 +224,7 @@ test "tokanize other manifest" {
         \\path2:/mjau/$HOME/home
         \\$HOME/path3:../target3
         \\path4:$HOME/target4
+        \\~/path5:~/target5
         \\
     ;
 
@@ -258,6 +265,16 @@ test "tokanize other manifest" {
         .{ .target_env, "HOME" },
         .{ .target, "/target4" },
         .{ .newline, "\n" },
+        .{ .path_home_dir, "~" },
+        .{ .path, "/path5" },
+        .{ .divider, ":" },
+        .{ .target_home_dir, "~" },
+        .{ .target, "/target5" },
+        .{ .newline, "\n" },
+        // .{ .path_home_dir, "~" },
+        // .{ .divider, ":" },
+        // .{ .target, "/~/target6" },
+        // .{ .newline, "\n" },
     };
 
     var tokenizer = try Tokenizer.init(allocator, manifest);

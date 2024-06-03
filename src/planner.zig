@@ -29,13 +29,12 @@ pub const Manifest = struct {
         };
     }
 
-    pub fn init(allocator: Allocator, p: Parser) !@This() {
-        var parser = p;
+    pub fn init(allocator: Allocator, parser: *Parser) !@This() {
         var links = std.ArrayList(Link).init(allocator);
 
         while (try parser.next(allocator)) |link| {
-            const link_ = try link.clone(allocator);
-            try links.append(link_);
+            // const link_ = try link.clone(allocator);
+            try links.append(link);
         }
 
         return .{
@@ -45,9 +44,7 @@ pub const Manifest = struct {
     }
 
     pub fn deinit(self: *@This()) void {
-        for (self.links.items) |link| {
-            link.deinit(self.allocator);
-        }
+        for (self.links.items) |link| link.deinit(self.allocator);
         self.links.deinit();
     }
 
@@ -155,16 +152,16 @@ pub const Planner = struct {
         for (next.links.items) |l| try next_map.put(l.path, l);
 
         var noop = std.ArrayList(Link).init(allocator);
-        defer noop.deinit();
+        errdefer noop.deinit();
 
         var add = std.ArrayList(Link).init(allocator);
-        defer add.deinit();
+        errdefer add.deinit();
 
         var remove = std.ArrayList(Link).init(allocator);
-        defer remove.deinit();
+        errdefer remove.deinit();
 
         var update = std.ArrayList(UpdateLink).init(allocator);
-        defer update.deinit();
+        errdefer update.deinit();
 
         var keep = std.StringHashMap(void).init(allocator);
         defer keep.deinit();
