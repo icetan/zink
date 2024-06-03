@@ -250,8 +250,8 @@ pub fn exists(file_path: []const u8) bool {
         return true
     else |_|
         {}
-    fs.cwd().access(file_path, .{}) catch {};
-    return false;
+    fs.cwd().access(file_path, .{}) catch return false;
+    return true;
 }
 
 pub fn manifestFromPath(allocator: Allocator, path: []const u8) !Manifest {
@@ -366,8 +366,6 @@ pub fn execPlan(allocator: Allocator, log_path: []const u8, manifest_paths: []co
     // Verify log file against file system
     var verified_log = try verify(allocator, "", manifest_log);
     defer verified_log.deinit();
-    // try stderr.print("verified_log: {}\n", .{verified_log});
-    // try stderr.print("manifest_log: {}\n", .{manifest_log});
 
     var log_diff = try Planner.init(allocator, verified_log, manifest_log);
     defer log_diff.deinit();
