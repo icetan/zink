@@ -14,7 +14,7 @@
           pkgs = nixpkgs.legacyPackages.${system};
           fs = pkgs.lib.fileset;
           name = "zink";
-          version = "0.0.0";
+          version = "0.0.1";
           pkg = pkgs.stdenv.mkDerivation {
             name = "${name}-${version}";
             src = fs.toSource {
