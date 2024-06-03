@@ -343,7 +343,8 @@ pub fn execPlan(allocator: Allocator, log_path: []const u8, manifest_paths: []co
     var scriptWriter = scriptBuf.writer();
 
     const dry = flags.dry or flags.script;
-    if (dry) try stderr.print("INFO: Dry run\n", .{});
+
+    if (flags.verbose and dry) try stderr.print("info: Dry run\n", .{});
 
     // Read log (current state)
     var manifest_log = (try readManifests(allocator, &.{log_path})).?;
@@ -365,7 +366,7 @@ pub fn execPlan(allocator: Allocator, log_path: []const u8, manifest_paths: []co
     // TODO: Check if changed symlinks are in planned update, if not don't abort
     if (log_diff.update.len > 0) {
         for (log_diff.update) |link| {
-            try stderr.print("INFO: Symlink changed: {}\n", .{link});
+            try stderr.print("info: Symlink changed: {}\n", .{link});
         }
         if (flags.overwrite_mode == .no_diff) {
             abort = true;
@@ -376,20 +377,23 @@ pub fn execPlan(allocator: Allocator, log_path: []const u8, manifest_paths: []co
     defer plan.deinit();
 
     if (flags.verbose) {
-        for (plan.noop) |link| {
-            try stderr.print("  = {}\n", .{link});
-        }
+        for (plan.noop) |link| try stderr.print("  = {}\n", .{link});
+    }
+
+    if (plan.noDiff()) {
+        if (flags.verbose) try stderr.print("info: Nothing to do\n", .{});
+        return;
     }
 
     for (plan.add) |link| {
         if (fs.accessAbsolute(link.path, .{})) |_| {
             switch (flags.overwrite_mode) {
                 .no_diff => {
-                    try stderr.print("INFO: Symlink already exists: {}\n", .{link});
+                    try stderr.print("info: Symlink already exists: {}\n", .{link});
                     abort = true;
                 },
                 .overwrite => {
-                    try stderr.print("INFO: Overwrite symlink '{s}'\n", .{link.path});
+                    try stderr.print("info: Overwrite symlink '{s}'\n", .{link.path});
                     if (!dry) {
                         try fs.deleteFileAbsolute(link.path);
                     }

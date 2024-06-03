@@ -223,7 +223,7 @@ pub const Planner = struct {
         }
     }
 
-    pub fn no_diff(self: @This()) bool {
+    pub fn noDiff(self: @This()) bool {
         return self.add.len + self.remove.len + self.update.len == 0;
     }
 

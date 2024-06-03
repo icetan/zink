@@ -40,7 +40,7 @@ const ErrFlags = struct {
 
 fn err(comptime msg: []const u8, values: anytype, flags: ErrFlags) !void {
     const stderr = std.io.getStdErr().writer();
-    try stderr.print("ERROR: ", .{});
+    try stderr.print("error: ", .{});
     try stderr.print(msg, values);
     try stderr.print("\n", .{});
     if (flags.usage) {
