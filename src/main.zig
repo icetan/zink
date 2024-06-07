@@ -29,8 +29,8 @@ fn usage() !void {
         \\Manifest: Files to apply
         \\
         \\Envs:
-        \\  ZINK_PATH           Manifest files to apply, delimit with ':'
-        \\  ZINK_LOG_PATH       State file to use
+        \\  ZINK_PATH           Manifest files to apply, delimit with ':' (default: ~/.zink)
+        \\  ZINK_STATE_PATH     State file to use (default: ~/.zink.log)
         \\
     , .{std.fs.path.basename(pname)});
 }
@@ -104,7 +104,7 @@ pub fn main() !void {
     }
 
     var log_path: []const u8 = undefined;
-    if (std.posix.getenv("ZINK_LOG_PATH")) |path_env| {
+    if (std.posix.getenv("ZINK_STATE_PATH")) |path_env| {
         log_path = path_env;
     } else {
         log_path = try std.mem.concat(allocator, u8, &.{ home_env, "/.zink.state" });
