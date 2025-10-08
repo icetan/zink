@@ -10,7 +10,7 @@
   # nixConfig.extra-trusted-public-keys = "devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw=";
   # nixConfig.extra-substituters = "https://devenv.cachix.org";
 
-  outputs = { self, nixpkgs, ... }@inputs:
+  outputs = { self, nixpkgs, ... }:
     (fn: builtins.foldl'
       (acc: s: nixpkgs.legacyPackages.${s}.lib.recursiveUpdate
         acc
@@ -42,7 +42,9 @@
               ];
             };
             buildInputs = builtins.attrValues buildDeps;
+            ZIG_GLOBAL_CACHE_DIR = "/tmp/zig-cache";
             buildPhase = ''
+              mkdir -p $ZIG_GLOBAL_CACHE_DIR
               zig build -Doptimize=ReleaseSmall -Dtarget=${system}
             '';
             installPhase = ''

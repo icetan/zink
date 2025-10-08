@@ -16,11 +16,11 @@ pub const Manifest = struct {
 
     pub fn initLinks(allocator: Allocator, ls: []const Link) !@This() {
         // var links = std.StringArrayHashMap(Link).init(allocator);
-        var links = std.ArrayList(Link).init(allocator);
+        var links: std.ArrayList(Link) = .empty;
 
         for (ls) |link| {
             const link_ = try link.clone(allocator);
-            try links.append(link_);
+            try links.append(allocator, link_);
         }
 
         return .{
@@ -30,11 +30,11 @@ pub const Manifest = struct {
     }
 
     pub fn init(allocator: Allocator, parser: *Parser) !@This() {
-        var links = std.ArrayList(Link).init(allocator);
+        var links: std.ArrayList(Link) = .empty;
 
         while (try parser.next(allocator)) |link| {
             // const link_ = try link.clone(allocator);
-            try links.append(link);
+            try links.append(allocator, link);
         }
 
         return .{
@@ -44,8 +44,9 @@ pub const Manifest = struct {
     }
 
     pub fn deinit(self: *@This()) void {
-        for (self.links.items) |link| link.deinit(self.allocator);
-        self.links.deinit();
+        var links = self.links;
+        for (links.items) |link| link.deinit(self.allocator);
+        links.deinit(self.allocator);
     }
 
     pub fn append(self: *@This(), link: *Link) !void {
@@ -54,7 +55,7 @@ pub const Manifest = struct {
 
     pub fn appendManifest(self: *@This(), manifest: *Manifest) !void {
         for (manifest.links.items) |link| {
-            try self.links.append(try link.clone(self.allocator));
+            try self.links.append(self.allocator, try link.clone(self.allocator));
         }
     }
 
@@ -62,22 +63,22 @@ pub const Manifest = struct {
         self: @This(),
         writer: anytype,
     ) !void {
+        var writer_ = writer;
         for (self.links.items) |link| {
-            _ = try writer.print("{s}:{s}\n", .{ link.path, link.target });
+            _ = try writer_.print("{s}:{s}\n", .{ link.path, link.target });
         }
+        try writer_.flush();
     }
 
     pub fn format(
         self: @This(),
-        comptime _: []const u8,
-        _: std.fmt.FormatOptions,
         writer: anytype,
     ) !void {
         _ = try writer.print("{s}", .{@typeName(@This())});
         try writer.writeAll("{\n");
 
         for (self.links.items) |link| {
-            _ = try writer.print("  {}\n", .{link});
+            _ = try writer.print("  {f}\n", .{link});
         }
         try writer.writeAll("}");
     }
@@ -122,8 +123,6 @@ pub const Planner = struct {
 
         pub fn format(
             self: @This(),
-            comptime _: []const u8,
-            _: std.fmt.FormatOptions,
             writer: anytype,
         ) !void {
             _ = try writer.print("{s} -> {s} ({s})", .{ self.path, self.new_target, self.target });
@@ -151,17 +150,17 @@ pub const Planner = struct {
         defer next_map.deinit();
         for (next.links.items) |l| try next_map.put(l.path, l);
 
-        var noop = std.ArrayList(Link).init(allocator);
-        errdefer noop.deinit();
+        var noop: std.ArrayList(Link) = .empty;
+        errdefer noop.deinit(allocator);
 
-        var add = std.ArrayList(Link).init(allocator);
-        errdefer add.deinit();
+        var add: std.ArrayList(Link) = .empty;
+        errdefer add.deinit(allocator);
 
-        var remove = std.ArrayList(Link).init(allocator);
-        errdefer remove.deinit();
+        var remove: std.ArrayList(Link) = .empty;
+        errdefer remove.deinit(allocator);
 
-        var update = std.ArrayList(UpdateLink).init(allocator);
-        errdefer update.deinit();
+        var update: std.ArrayList(UpdateLink) = .empty;
+        errdefer update.deinit(allocator);
 
         var keep = std.StringHashMap(void).init(allocator);
         defer keep.deinit();
@@ -173,9 +172,9 @@ pub const Planner = struct {
 
             if (current_map.get(link.path)) |cur_link| {
                 if (std.mem.eql(u8, cur_link.target, link.target)) {
-                    try noop.append(try cur_link.clone(allocator));
+                    try noop.append(allocator, try cur_link.clone(allocator));
                 } else {
-                    try update.append(try UpdateLink.init(
+                    try update.append(allocator, try UpdateLink.init(
                         allocator,
                         cur_link.target,
                         cur_link.path,
@@ -183,21 +182,21 @@ pub const Planner = struct {
                     ));
                 }
             } else {
-                try add.append(try link.clone(allocator));
+                try add.append(allocator, try link.clone(allocator));
             }
         }
 
         for (current.links.items) |cur_link| {
             if (keep.get(cur_link.path) == null) {
-                try remove.append(try cur_link.clone(allocator));
+                try remove.append(allocator, try cur_link.clone(allocator));
             }
         }
 
         return .{
-            .noop = try noop.toOwnedSlice(),
-            .add = try add.toOwnedSlice(),
-            .remove = try remove.toOwnedSlice(),
-            .update = try update.toOwnedSlice(),
+            .noop = try noop.toOwnedSlice(allocator),
+            .add = try add.toOwnedSlice(allocator),
+            .remove = try remove.toOwnedSlice(allocator),
+            .update = try update.toOwnedSlice(allocator),
             .allocator = allocator,
         };
     }
@@ -228,42 +227,43 @@ pub const Planner = struct {
     }
 
     pub fn toManifest(self: @This()) !Manifest {
-        var links = std.ArrayList(Link).init(self.allocator.?);
-        defer links.deinit();
+        const allocator = self.allocator.?;
+        var links: std.ArrayList(Link) = .empty;
+        defer links.deinit(allocator);
 
-        try links.appendSlice(self.noop);
+        try links.appendSlice(allocator, self.noop);
 
-        var uplinks = std.ArrayList(Link).init(self.allocator.?);
-        defer uplinks.deinit();
-        defer for (uplinks.items) |link| link.deinit(self.allocator.?);
-        for (self.update) |uplink| try uplinks.append(try uplink.toLink(self.allocator.?));
-        try links.appendSlice(uplinks.items);
+        var uplinks: std.ArrayList(Link) = .empty;
+        defer uplinks.deinit(allocator);
+        defer for (uplinks.items) |link| link.deinit(allocator);
+        for (self.update) |uplink| try uplinks.append(allocator, try uplink.toLink(allocator));
+        try links.appendSlice(allocator, uplinks.items);
 
-        try links.appendSlice(self.add);
+        try links.appendSlice(allocator, self.add);
 
-        return Manifest.initLinks(self.allocator.?, links.items);
+        return Manifest.initLinks(allocator, links.items);
     }
 
     pub fn format(
         self: @This(),
-        comptime _: []const u8,
-        _: std.fmt.FormatOptions,
+        // comptime _: []const u8,
+        // _: std.fmt.FormatOptions,
         writer: anytype,
     ) !void {
         _ = try writer.print("{s}", .{@typeName(@This())});
         try writer.writeAll("{\n");
 
         for (self.noop) |link| {
-            _ = try writer.print("  = {}\n", .{link});
+            _ = try writer.print("  = {f}\n", .{link});
         }
         for (self.add) |link| {
-            _ = try writer.print("  + {}\n", .{link});
+            _ = try writer.print("  + {f}\n", .{link});
         }
         for (self.update) |uplink| {
-            _ = try writer.print("  ~ {}\n", .{uplink});
+            _ = try writer.print("  ~ {f}\n", .{uplink});
         }
         for (self.remove) |link| {
-            _ = try writer.print("  - {}\n", .{link});
+            _ = try writer.print("  - {f}\n", .{link});
         }
         try writer.writeAll("}");
     }
@@ -274,25 +274,25 @@ pub const Planner = struct {
         }
         for (self.noop, 0..) |link, i| {
             if (!link.eql(other.noop[i])) {
-                print("{} !! == {}\n", .{ link, other.noop[i] });
+                print("{f} !! == {f}\n", .{ link, other.noop[i] });
                 return false;
             }
         }
         for (self.add, 0..) |link, i| {
             if (!link.eql(other.add[i])) {
-                print("{} !! == {}\n", .{ link, other.add[i] });
+                print("{f} !! == {f}\n", .{ link, other.add[i] });
                 return false;
             }
         }
         for (self.update, 0..) |uplink, i| {
             if (!uplink.eql(other.update[i])) {
-                print("{} !! == {}\n", .{ uplink, other.update[i] });
+                print("{f} !! == {f}\n", .{ uplink, other.update[i] });
                 return false;
             }
         }
         for (self.remove, 0..) |link, i| {
             if (!link.eql(other.remove[i])) {
-                print("{} !! == {}\n", .{ link, other.remove[i] });
+                print("{f} !! == {f}\n", .{ link, other.remove[i] });
                 return false;
             }
         }
@@ -340,7 +340,7 @@ test "simple planner" {
     std.testing.expect(expect.eql(planner)) catch |err| {
         // std.debug.print("{}\n", .{manifest_current});
         // std.debug.print("{}\n", .{manifest_next});
-        std.debug.print("expected: {}\ngot: {}\n", .{ expect, planner });
+        std.debug.print("expected: {f}\ngot: {f}\n", .{ expect, planner });
         return err;
     };
 }
@@ -374,7 +374,7 @@ test "manifest append" {
         try m1.appendManifest(&m2);
 
         std.testing.expect(expect.eql(m1)) catch |err| {
-            print("expected: {}\ngot: {}\n", .{ expect, m1 });
+            print("expected: {f}\ngot: {f}\n", .{ expect, m1 });
             return err;
         };
     }

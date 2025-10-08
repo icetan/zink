@@ -34,8 +34,6 @@ pub const Token = struct {
 
     pub fn format(
         self: @This(),
-        comptime _: []const u8,
-        _: std.fmt.FormatOptions,
         writer: anytype,
     ) !void {
         _ = try writer.print("{s}({s})", .{ @tagName(self.tag), self.text });
@@ -51,23 +49,23 @@ pub const Lexer = struct {
     pub fn init(allocator: Allocator, manifest: []const u8) !@This() {
         var reader = (try std.unicode.Utf8View.init(manifest)).iterator();
         const codepoint = reader.nextCodepointSlice();
-        const text = ArrayList(u8).init(allocator);
         const self = @This(){
             .allocator = allocator,
             .reader = reader,
-            .text = text,
+            .text = .empty,
             .codepoint = codepoint,
         };
         return self;
     }
 
     pub fn deinit(self: @This()) void {
-        self.text.deinit();
+        var text = self.text;
+        text.deinit(self.allocator);
     }
 
     fn consume(self: *@This()) !void {
         if (self.codepoint) |cp| {
-            try self.text.appendSlice(cp);
+            try self.text.appendSlice(self.allocator, cp);
             // print("consumed cp == {s}\n", .{cp});
         }
         // self.codepoint = self.reader.nextCodepointSlice();
@@ -94,7 +92,7 @@ pub const Lexer = struct {
 
     fn makeToken(self: *@This(), allocator: Allocator, tag: TokenTag) !Token {
         const token = try Token.init(allocator, tag, self.text.items);
-        self.text.clearAndFree();
+        self.text.clearAndFree(allocator);
         // print("makeToken {s} == {s}\n", .{@tagName(tag), text});
         return token;
     }
@@ -119,7 +117,7 @@ pub const Lexer = struct {
         self.skip();
         while (self.char()) |c| switch (c) {
             '0'...'9', 'a'...'z', 'A'...'Z', '_' => try self.consume(),
-            else => { break; },
+            else => break,
         };
         return self.makeToken(allocator, .env);
     }

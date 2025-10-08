@@ -11,9 +11,11 @@ pub fn build(b: *std.Build) void {
 
     const exe = b.addExecutable(.{
         .name = "zink",
-        .root_source_file = b.path("src/main.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
     });
     exe.root_module.addImport("glob", libglob.module("glob"));
 
@@ -36,10 +38,12 @@ pub fn build(b: *std.Build) void {
     ) orelse &[0][]const u8{};
     // std.debug.print("\nfilters: {s}\n", .{test_filters});
     const unit_tests = b.addTest(.{
-        .root_source_file = b.path("src/tests.zig"),
-        .target = target,
-        .optimize = optimize,
         .filters = test_filters,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/tests.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
     });
     unit_tests.root_module.addImport("glob", libglob.module("glob"));
     const run_unit_tests = b.addRunArtifact(unit_tests);

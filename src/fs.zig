@@ -4,7 +4,7 @@ const fs = std.fs;
 const Dir = std.fs.Dir;
 const print = std.debug.print;
 
-const MAX_PATH_BYTES = fs.MAX_PATH_BYTES;
+const MAX_PATH_BYTES = fs.max_path_bytes;
 
 const Glob = @import("glob").Iterator;
 
@@ -36,6 +36,18 @@ const DiffLink = union(enum) {
             .missing => {},
             .ok => |link| link.deinit(allocator),
             .changed => |uplink| uplink.deinit(allocator),
+        }
+    }
+
+    pub fn format(
+        self: @This(),
+        writer: anytype,
+    ) !void {
+        try writer.print("{s} ", .{@typeName(@This())});
+        switch (self) {
+            .missing => try writer.print("missing", .{}),
+            .ok => |link| try writer.print("{f}", .{link}),
+            .changed => |uplink| try writer.print("{f}", .{uplink}),
         }
     }
 };
@@ -98,8 +110,8 @@ pub fn getGlobIter(allocator: Allocator, path: []const u8) !?struct { Glob, std.
 // }
 
 fn resolveLink(allocator: Allocator, path: []const u8, link: Link) ![]const Link {
-    var fs_links = std.ArrayList(Link).init(allocator);
-    errdefer fs_links.deinit();
+    var fs_links: std.ArrayList(Link) = .empty;
+    errdefer fs_links.deinit(allocator);
 
     const path_is_dir = link.path[link.path.len - 1] == '/';
     const abs_path = try resolvePath(allocator, path, link.path);
@@ -123,7 +135,7 @@ fn resolveLink(allocator: Allocator, path: []const u8, link: Link) ![]const Link
                 dir_name,
                 .{ .iterate = true },
             ) catch |err| {
-                print("Couldn't resolve glob path: '{s}'\n", .{abs_target});
+                std.log.err("Couldn't resolve glob path: '{s}'", .{abs_target});
                 return err;
             };
             defer dir_iter.close();
@@ -143,26 +155,26 @@ fn resolveLink(allocator: Allocator, path: []const u8, link: Link) ![]const Link
                     target_file,
                     path_file,
                 );
-                try fs_links.append(link__);
+                try fs_links.append(allocator, link__);
             }
         } else {
             const target_basename = std.fs.path.basename(abs_target);
             const abs_path_ = try std.fs.path.join(allocator, &.{ abs_path, target_basename });
             defer allocator.free(abs_path_);
-            try fs_links.append(try Link.init(
+            try fs_links.append(allocator, try Link.init(
                 allocator,
                 abs_target,
                 abs_path_,
             ));
         }
     } else {
-        try fs_links.append(try Link.init(
+        try fs_links.append(allocator, try Link.init(
             allocator,
             abs_target,
             abs_path,
         ));
     }
-    return fs_links.toOwnedSlice();
+    return fs_links.toOwnedSlice(allocator);
 }
 
 fn verifyLink(allocator: Allocator, path: []const u8, link: Link) !DiffLink {
@@ -194,10 +206,10 @@ fn verifyLink(allocator: Allocator, path: []const u8, link: Link) !DiffLink {
 }
 
 pub fn verify(allocator: Allocator, path: []const u8, manifest: Manifest) !Manifest {
-    var fs_links = std.ArrayList(Link).init(allocator);
+    var fs_links: std.ArrayList(Link) = .empty;
     defer {
         for (fs_links.items) |link| link.deinit(allocator);
-        fs_links.deinit();
+        fs_links.deinit(allocator);
     }
 
     for (manifest.links.items) |link| {
@@ -207,10 +219,10 @@ pub fn verify(allocator: Allocator, path: []const u8, manifest: Manifest) !Manif
         switch (diff_link) {
             .missing => {},
             .ok => |l| {
-                try fs_links.append(try l.clone(allocator));
+                try fs_links.append(allocator, try l.clone(allocator));
             },
             .changed => |uplink| {
-                try fs_links.append(try uplink.toLink(allocator));
+                try fs_links.append(allocator, try uplink.toLink(allocator));
             },
         }
     }
@@ -219,16 +231,16 @@ pub fn verify(allocator: Allocator, path: []const u8, manifest: Manifest) !Manif
 }
 
 pub fn resolve(allocator: Allocator, path: []const u8, manifest: Manifest) !Manifest {
-    var links = std.ArrayList(Link).init(allocator);
+    var links: std.ArrayList(Link) = .empty;
     defer {
         for (links.items) |link| link.deinit(allocator);
-        links.deinit();
+        links.deinit(allocator);
     }
 
     for (manifest.links.items) |link| {
         const resolved_links = try resolveLink(allocator, path, link);
         defer allocator.free(resolved_links);
-        try links.appendSlice(resolved_links);
+        try links.appendSlice(allocator, resolved_links);
     }
 
     return Manifest.initLinks(allocator, links.items);
@@ -237,7 +249,7 @@ pub fn resolve(allocator: Allocator, path: []const u8, manifest: Manifest) !Mani
 pub fn readFile(allocator: Allocator, file_path: []const u8) ![]const u8 {
     const dir = std.fs.cwd();
     const file = dir.openFile(file_path, .{}) catch |err| {
-        print("Couldn't read file: '{s}'\n", .{file_path});
+        std.log.err("Couldn't read file: '{s}'", .{file_path});
         return err;
     };
     defer file.close();
@@ -248,8 +260,7 @@ pub fn exists(file_path: []const u8) bool {
     var buf: [MAX_PATH_BYTES]u8 = undefined;
     if (fs.cwd().readLink(file_path, &buf)) |_|
         return true
-    else |_|
-        {}
+    else |_| {}
     fs.cwd().access(file_path, .{}) catch return false;
     return true;
 }
@@ -257,7 +268,7 @@ pub fn exists(file_path: []const u8) bool {
 pub fn manifestFromPath(allocator: Allocator, path: []const u8) !Manifest {
     var buf: [MAX_PATH_BYTES]u8 = undefined;
     const manifest_path = std.fs.cwd().realpath(path, &buf) catch |err| {
-        print("Couldn't find manifest file: '{s}'\n", .{path});
+        std.log.err("Couldn't find manifest file: '{s}'", .{path});
         return err;
     };
     const manifest_dir = std.fs.path.dirname(manifest_path).?;
@@ -320,9 +331,12 @@ pub fn readManifests(allocator: Allocator, glob_paths: []const []const u8) !?Man
 }
 
 pub fn saveManifestFile(manifest: Manifest, path: []const u8) !void {
+    std.log.debug("Saving manifest to file at '{s}'", .{path});
     const file = try std.fs.cwd().createFile(path, .{});
     defer file.close();
-    try manifest.save(file.writer());
+    var buf: [1024]u8 = undefined;
+    var writer = file.writer(&buf);
+    try manifest.save(&writer.interface);
 }
 
 // pub fn verifyManifest(allocator: Allocator, manifest: Manifest) !Planner {
@@ -345,16 +359,15 @@ pub const ExecPlanFlags = struct {
 };
 
 pub fn execPlan(allocator: Allocator, log_path: []const u8, manifest_paths: []const []const u8, flags: ExecPlanFlags) !void {
-    const stdout = std.io.getStdOut().writer();
-    const stderr = std.io.getStdErr().writer();
+    var stdout = std.fs.File.stdout().writer(&.{});
     var abort = false;
-    var scriptBuf = std.ArrayList(u8).init(allocator);
-    defer scriptBuf.deinit();
-    var scriptWriter = scriptBuf.writer();
+    var scriptBuf: std.ArrayList(u8) = .empty;
+    defer scriptBuf.deinit(allocator);
+    var scriptWriter = scriptBuf.writer(allocator);
 
     const dry = flags.dry or flags.script;
 
-    if (flags.verbose and dry) try stderr.print("info: Dry run\n", .{});
+    if (flags.verbose and dry) std.log.info("Dry run", .{});
 
     // Read log, create if doesn't exist (current state)
     if (!exists(log_path)) {
@@ -377,7 +390,7 @@ pub fn execPlan(allocator: Allocator, log_path: []const u8, manifest_paths: []co
     // TODO: Check if changed symlinks are in planned update, if not don't abort
     if (log_diff.update.len > 0) {
         for (log_diff.update) |link| {
-            try stderr.print("info: Symlink changed: {}\n", .{link});
+            std.log.info("Symlink changed: {f}", .{link});
         }
         if (flags.overwrite_mode == .no_diff) {
             abort = true;
@@ -388,11 +401,11 @@ pub fn execPlan(allocator: Allocator, log_path: []const u8, manifest_paths: []co
     defer plan.deinit();
 
     if (flags.verbose) {
-        for (plan.noop) |link| try stderr.print("  = {}\n", .{link});
+        for (plan.noop) |link| std.log.info("  = {f}", .{link});
     }
 
     if (plan.noDiff()) {
-        if (flags.verbose) try stderr.print("info: Nothing to do\n", .{});
+        if (flags.verbose) std.log.info("Nothing to do", .{});
         return;
     }
 
@@ -403,11 +416,11 @@ pub fn execPlan(allocator: Allocator, log_path: []const u8, manifest_paths: []co
 
             switch (flags.overwrite_mode) {
                 .no_diff => {
-                    try stderr.print("info: Symlink already exists: {}\n", .{link});
+                    std.log.info("Symlink already exists: {f}", .{link});
                     abort = true;
                 },
                 .overwrite => {
-                    try stderr.print("info: Overwrite symlink '{s}'\n", .{link.path});
+                    std.log.info("Overwrite symlink '{s}'", .{link.path});
                     if (!dry) {
                         try fs.deleteFileAbsolute(link.path);
                     }
@@ -430,7 +443,7 @@ pub fn execPlan(allocator: Allocator, log_path: []const u8, manifest_paths: []co
         if (flags.script) {
             try scriptWriter.print("rm '{s}'\n", .{link.path});
         } else {
-            try stderr.print("  - {}\n", .{link});
+            std.log.info("  - {f}", .{link});
         }
     }
 
@@ -441,7 +454,7 @@ pub fn execPlan(allocator: Allocator, log_path: []const u8, manifest_paths: []co
         if (flags.script) {
             try scriptWriter.print("ln -sT '{s}' '{s}'\n", .{ link.target, link.path });
         } else {
-            try stderr.print("  + {}\n", .{link});
+            std.log.info("  + {f}", .{link});
         }
     }
 
@@ -454,7 +467,7 @@ pub fn execPlan(allocator: Allocator, log_path: []const u8, manifest_paths: []co
             try scriptWriter.print("rm '{s}'\n", .{uplink.path});
             try scriptWriter.print("ln -sT '{s}' '{s}'\n", .{ uplink.new_target, uplink.path });
         } else {
-            try stderr.print("  ~ {}\n", .{uplink});
+            std.log.info("  ~ {f}", .{uplink});
         }
     }
 
@@ -469,10 +482,10 @@ pub fn execPlan(allocator: Allocator, log_path: []const u8, manifest_paths: []co
     if (flags.script) {
         var buf: [MAX_PATH_BYTES]u8 = undefined;
         const abs_log_path = try std.fs.cwd().realpath(log_path, &buf);
-        try stdout.writeAll(scriptBuf.items);
-        try stdout.print("echo >{s} '\\\n", .{abs_log_path});
-        try new_log.save(stdout);
-        try stdout.writeAll("'\n");
+        try stdout.interface.writeAll(scriptBuf.items);
+        try stdout.interface.print("echo >{s} '\\\n", .{abs_log_path});
+        try new_log.save(stdout.interface);
+        try stdout.interface.writeAll("'\n");
     }
 }
 
@@ -543,7 +556,7 @@ test "verify manifest" {
         defer got.deinit();
 
         testing.expectEqualManifest(allocator, abs_base, expect, got) catch |err| {
-            print("\nexpected: {}\ngot: {}\n", .{ expect, got });
+            print("\nexpected: {f}\ngot: {f}\n", .{ expect, got });
             return err;
         };
     }
@@ -590,7 +603,7 @@ test "verify link" {
         defer result.deinit(allocator);
 
         testing.expectEqualDiffLink(allocator, abs_base, diff_link, result) catch |err| {
-            print("\nexpected: {}\ngot {}\n", .{ diff_link, result });
+            print("\nexpected: {f}\ngot {f}\n", .{ diff_link, result });
             return err;
         };
     }
@@ -617,8 +630,8 @@ test "resolve link" {
         .{
             .{ .target = "./*", .path = "path1/" },
             &.{
-                .{ .target = "target1", .path = "path1/target1" },
                 .{ .target = "target3", .path = "path1/target3" },
+                .{ .target = "target1", .path = "path1/target1" },
             },
         },
     };

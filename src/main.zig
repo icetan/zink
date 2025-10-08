@@ -1,8 +1,9 @@
 const std = @import("std");
-const Utf8Iterator = std.unicode.Utf8Iterator;
+
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 const MAX_PATH_BYTES = std.fs.MAX_PATH_BYTES;
+const Utf8Iterator = std.unicode.Utf8Iterator;
 const print = std.debug.print;
 
 const resolve = @import("fs.zig");
@@ -16,7 +17,7 @@ const ExitCodes = enum(u8) {
 fn usage() !void {
     var args = std.process.args();
     const pname = args.next().?;
-    try std.io.getStdErr().writer().print(
+    std.log.info(
         \\Usage: {s} [OPTIONS] [MANIFEST..]
         \\
         \\Options:
@@ -41,10 +42,7 @@ const ErrFlags = struct {
 };
 
 fn err(comptime msg: []const u8, values: anytype, flags: ErrFlags) !void {
-    const stderr = std.io.getStdErr().writer();
-    try stderr.print("error: ", .{});
-    try stderr.print(msg, values);
-    try stderr.print("\n", .{});
+    std.log.err(msg, values);
     if (flags.usage) {
         try usage();
     }
@@ -55,23 +53,20 @@ fn eql(a: []const u8, b: []const u8) bool {
     return std.mem.eql(u8, a, b);
 }
 
-// const CommandFlags = struct {
-//     verbose: bool = false,
-// };
-
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    var zink_paths = std.ArrayList([]const u8).init(allocator);
-    defer zink_paths.deinit();
+    var zink_paths: std.ArrayList([]const u8) = .empty;
+    defer zink_paths.deinit(allocator);
 
     var exec_flags: resolve.ExecPlanFlags = .{};
 
     var args = std.process.args();
     _ = args.next();
     while (args.next()) |arg| {
+        std.log.debug("Parsing arg: {s}", .{arg});
         if (eql(arg, "-h") or eql(arg, "-help")) {
             try usage();
             std.process.exit(0);
@@ -86,7 +81,7 @@ pub fn main() !void {
         } else if (arg[0] == '-') {
             try err("No option '{s}'", .{arg}, .{ .usage = true, .code = .invalid_option });
         } else {
-            try zink_paths.append(arg);
+            try zink_paths.append(allocator, arg);
         }
     }
 
@@ -94,12 +89,12 @@ pub fn main() !void {
 
     if (zink_paths.items.len == 0) {
         if (std.posix.getenv("ZINK_PATH")) |path_env| {
-            var zink_path_iter = std.mem.split(u8, path_env, ":");
-            while (zink_path_iter.next()) |zp| try zink_paths.append(zp);
+            var zink_path_iter = std.mem.splitSequence(u8, path_env, ":");
+            while (zink_path_iter.next()) |zp| try zink_paths.append(allocator, zp);
         } else {
             const zink_path = try std.mem.concat(allocator, u8, &.{ home_env, "/.zink" });
             defer allocator.free(zink_path);
-            try zink_paths.append(zink_path);
+            try zink_paths.append(allocator, zink_path);
         }
     }
 
