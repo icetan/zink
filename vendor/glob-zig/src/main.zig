@@ -1,7 +1,7 @@
 const std = @import("std");
 const mem = std.mem;
 
-const open_flags = .{
+const open_flags: std.fs.Dir.OpenOptions = .{
     .access_sub_paths = true,
     .iterate = true,
 };
@@ -29,7 +29,7 @@ pub const Iterator = struct {
         };
         errdefer ret.deinit();
 
-        var it = mem.split(u8, pattern, "/");
+        var it = mem.splitSequence(u8, pattern, "/");
         while (it.next()) |seg| {
             if (mem.indexOf(u8, seg, "**") != null)
                 return error.NotSupported;
@@ -57,7 +57,7 @@ pub const Iterator = struct {
         if (mem.eql(u8, pattern, "*")) return true;
 
         var i: usize = 0;
-        var it = mem.tokenize(u8, pattern, "*");
+        var it = mem.tokenizeSequence(u8, pattern, "*");
         var exact_begin = pattern.len > 0 and pattern[0] != '*';
 
         while (it.next()) |substr| {
@@ -121,8 +121,10 @@ pub const Iterator = struct {
 
             i -= 1;
             _ = self.components.pop();
-            var dir = self.stack.pop().dir;
-            dir.close();
+            if (self.stack.pop()) |entry| {
+                var dir = entry.dir;
+                dir.close();
+            }
         }
     }
 };

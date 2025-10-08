@@ -4,11 +4,14 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const libglob = b.addStaticLibrary(.{
+    const libglob = b.addLibrary(.{
         .name = "glob",
-        .root_source_file = b.path("src/main.zig"),
-        .target = target,
-        .optimize = optimize,
+        .linkage = .static,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
     });
 
     _ = b.addModule("glob", .{
@@ -19,8 +22,10 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run library tests");
     const main_tests = b.addTest(.{
-        .root_source_file = b.path("src/main.zig"),
-        .target = target,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+        }),
     });
 
     const run_unit_tests = b.addRunArtifact(main_tests);

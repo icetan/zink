@@ -1,5 +1,6 @@
 .{
-    .name = "zink",
+    .name = .zink,
+    .fingerprint = 0x43de91b2c1bf6776,
     .version = "0.0.1",
     .dependencies = .{
         .@"glob-zig" = .{

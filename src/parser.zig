@@ -50,8 +50,6 @@ pub const Link = struct {
 
     pub fn format(
         self: @This(),
-        comptime _: []const u8,
-        _: std.fmt.FormatOptions,
         writer: anytype,
     ) !void {
         _ = try writer.print("{s} -> {s}", .{ self.path, self.target });
@@ -74,7 +72,7 @@ pub const Parser = struct {
     pub fn init(allocator: Allocator, lexer: *Lexer, env_lookup: *const EnvLookup) !@This() {
         return @This(){
             .lexer = lexer,
-            .text = ArrayList(u8).init(allocator),
+            .text = .empty,
             .envLookup = env_lookup,
             .allocator = allocator,
             .token = try lexer.next(allocator),
@@ -82,7 +80,7 @@ pub const Parser = struct {
     }
 
     pub fn deinit(self: *@This()) void {
-        self.text.deinit();
+        self.text.deinit(self.allocator);
         // print("Parser.deinit free self.token {any}\n", .{self.token});
         // print("Parser.deinit free self.deinitToken {any}\n", .{self.deinitToken});
 
@@ -96,7 +94,7 @@ pub const Parser = struct {
 
     fn makeText(self: *@This()) ![]const u8 {
         const text = self.allocator.dupe(u8, self.text.items);
-        self.text.clearAndFree();
+        self.text.clearAndFree(self.allocator);
         return text;
     }
 
@@ -114,7 +112,7 @@ pub const Parser = struct {
 
     fn consume(self: *@This()) !void {
         if (self.token) |token| {
-            try self.text.appendSlice(token.text);
+            try self.text.appendSlice(self.allocator, token.text);
         }
         try self.skip();
     }
@@ -128,7 +126,7 @@ pub const Parser = struct {
 
     fn appendEnvLookup(self: *@This(), env: []const u8) !void {
         const env_text = self.envLookup(env).?;
-        try self.text.appendSlice(env_text);
+        try self.text.appendSlice(self.allocator, env_text);
     }
 
     fn makePath(self: *@This()) !void {
@@ -169,7 +167,7 @@ pub const Parser = struct {
                         try self.makePath();
                         try self.skip();
                     },
-                    .target => return Error.IllegalToken,
+                    .target => try self.consume(), //return Error.IllegalToken,
                 },
                 .newline => switch (self.state) {
                     .path => if (self.noText())
@@ -274,7 +272,7 @@ test "parse manifest no trailing newline" {
         \\path2:target2
         \\$HOME/path3:$HOME/target3
         \\~/path4:~/target4
-        // \\~:/~/target5
+        \\path5:target5:end
     ;
 
     const matrix = [_]Link{
@@ -294,10 +292,10 @@ test "parse manifest no trailing newline" {
             .target = "_HOME_/target4",
             .path = "_HOME_/path4",
         },
-        // .{
-        //     .target = "_HOME_",
-        //     .path = "/~/target5",
-        // },
+        .{
+            .target = "target5:end",
+            .path = "path5",
+        },
     };
 
     var lexer = try Lexer.init(allocator, manifest);
