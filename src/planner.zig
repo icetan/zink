@@ -67,7 +67,6 @@ pub const Manifest = struct {
         for (self.links.items) |link| {
             _ = try writer_.print("{s}:{s}\n", .{ link.path, link.target });
         }
-        try writer_.flush();
     }
 
     pub fn format(
