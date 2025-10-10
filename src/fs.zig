@@ -337,6 +337,7 @@ pub fn saveManifestFile(manifest: Manifest, path: []const u8) !void {
     var buf: [1024]u8 = undefined;
     var writer = file.writer(&buf);
     try manifest.save(&writer.interface);
+    try writer.interface.flush();
 }
 
 // pub fn verifyManifest(allocator: Allocator, manifest: Manifest) !Planner {
@@ -359,7 +360,6 @@ pub const ExecPlanFlags = struct {
 };
 
 pub fn execPlan(allocator: Allocator, log_path: []const u8, manifest_paths: []const []const u8, flags: ExecPlanFlags) !void {
-    var stdout = std.fs.File.stdout().writer(&.{});
     var abort = false;
     var scriptBuf: std.ArrayList(u8) = .empty;
     defer scriptBuf.deinit(allocator);
@@ -482,10 +482,13 @@ pub fn execPlan(allocator: Allocator, log_path: []const u8, manifest_paths: []co
     if (flags.script) {
         var buf: [MAX_PATH_BYTES]u8 = undefined;
         const abs_log_path = try std.fs.cwd().realpath(log_path, &buf);
+        var stdoutBuf: [1024]u8 = undefined;
+        var stdout = std.fs.File.stdout().writer(&stdoutBuf);
         try stdout.interface.writeAll(scriptBuf.items);
         try stdout.interface.print("echo >{s} '\\\n", .{abs_log_path});
-        try new_log.save(stdout.interface);
+        try new_log.save(&stdout.interface);
         try stdout.interface.writeAll("'\n");
+        try stdout.interface.flush();
     }
 }
 
