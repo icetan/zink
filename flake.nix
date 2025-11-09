@@ -25,7 +25,7 @@
           };
 
           pname = "zink";
-          version = "0.1.0";
+          version = "0.1.1";
           target = builtins.replaceStrings [ "darwin" ] [ "macos" ] system;
           pkg = pkgs.stdenv.mkDerivation {
             name = "${pname}-${version}";
