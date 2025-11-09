@@ -53,7 +53,7 @@ pub const Manifest = struct {
         try self.links.append(try link.clone(self.allocator));
     }
 
-    pub fn appendManifest(self: *@This(), manifest: *Manifest) !void {
+    pub fn appendManifest(self: *@This(), manifest: *const Manifest) !void {
         for (manifest.links.items) |link| {
             try self.links.append(self.allocator, try link.clone(self.allocator));
         }

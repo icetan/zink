@@ -271,6 +271,7 @@ pub fn manifestFromPath(allocator: Allocator, path: []const u8) !Manifest {
         std.log.err("Couldn't find manifest file: '{s}'", .{path});
         return err;
     };
+    std.log.debug("Reading manifest from file: '{s}'", .{manifest_path});
     const manifest_dir = std.fs.path.dirname(manifest_path).?;
     const manifest_file = try readFile(allocator, manifest_path);
     defer allocator.free(manifest_file);
@@ -295,21 +296,35 @@ pub fn manifestFromPath(allocator: Allocator, path: []const u8) !Manifest {
 
 pub fn readManifests(allocator: Allocator, glob_paths: []const []const u8) !?Manifest {
     var manifest: ?Manifest = null;
+    errdefer if (manifest) |*m| {
+        m.deinit();
+    };
+
     for (glob_paths) |glob_path| {
         var buf: [MAX_PATH_BYTES]u8 = undefined;
-        if (try getGlobIter(allocator, glob_path)) |x| {
-            var glob = x[0];
-            defer glob.deinit();
-            var dir = x[1];
-            defer dir.close();
-            const dir_path = try dir.realpath(".", &buf);
+        if (getGlobIter(allocator, glob_path)) |opt| {
+            if (opt) |x| {
+                var glob = x[0];
+                defer glob.deinit();
+                var dir = x[1];
+                defer dir.close();
+                const dir_path = try dir.realpath(".", &buf);
 
-            while (try glob.next()) |file_path_| {
-                const basename = std.fs.path.basename(file_path_);
-                const file_path = try std.fs.path.join(allocator, &.{ dir_path, basename });
-                defer allocator.free(file_path);
+                while (try glob.next()) |file_path_| {
+                    const basename = std.fs.path.basename(file_path_);
+                    const file_path = try std.fs.path.join(allocator, &.{ dir_path, basename });
+                    defer allocator.free(file_path);
 
-                var m = try manifestFromPath(allocator, file_path);
+                    var m = try manifestFromPath(allocator, file_path);
+                    if (manifest) |*manifest_| {
+                        defer m.deinit();
+                        try manifest_.appendManifest(&m);
+                    } else {
+                        manifest = m;
+                    }
+                }
+            } else {
+                var m = try manifestFromPath(allocator, glob_path);
                 if (manifest) |*manifest_| {
                     defer m.deinit();
                     try manifest_.appendManifest(&m);
@@ -317,14 +332,8 @@ pub fn readManifests(allocator: Allocator, glob_paths: []const []const u8) !?Man
                     manifest = m;
                 }
             }
-        } else {
-            var m = try manifestFromPath(allocator, glob_path);
-            if (manifest) |*manifest_| {
-                defer m.deinit();
-                try manifest_.appendManifest(&m);
-            } else {
-                manifest = m;
-            }
+        } else |_| {
+            // Ignore error from glob
         }
     }
     return manifest;
@@ -633,9 +642,13 @@ test "resolve link" {
         .{
             .{ .target = "./*", .path = "path1/" },
             &.{
-                .{ .target = "target3", .path = "path1/target3" },
                 .{ .target = "target1", .path = "path1/target1" },
+                .{ .target = "target3", .path = "path1/target3" },
             },
+        },
+        .{
+            .{ .target = "./no-matches-*", .path = "path1/" },
+            &.{},
         },
     };
 

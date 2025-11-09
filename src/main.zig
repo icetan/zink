@@ -1,5 +1,4 @@
 const std = @import("std");
-
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 const MAX_PATH_BYTES = std.fs.MAX_PATH_BYTES;
@@ -60,6 +59,9 @@ pub fn main() !void {
 
     var zink_paths: std.ArrayList([]const u8) = .empty;
     defer zink_paths.deinit(allocator);
+    defer for (zink_paths.items) |path| {
+        allocator.free(path);
+    };
 
     var exec_flags: resolve.ExecPlanFlags = .{};
 
@@ -90,20 +92,23 @@ pub fn main() !void {
     if (zink_paths.items.len == 0) {
         if (std.posix.getenv("ZINK_PATH")) |path_env| {
             var zink_path_iter = std.mem.splitSequence(u8, path_env, ":");
-            while (zink_path_iter.next()) |zp| try zink_paths.append(allocator, zp);
+            while (zink_path_iter.next()) |zp| {
+                const zp_copy = try allocator.dupe(u8, zp);
+                try zink_paths.append(allocator, zp_copy);
+            }
         } else {
             const zink_path = try std.mem.concat(allocator, u8, &.{ home_env, "/.zink" });
-            defer allocator.free(zink_path);
             try zink_paths.append(allocator, zink_path);
         }
     }
 
     var log_path: []const u8 = undefined;
+    defer allocator.free(log_path);
+
     if (std.posix.getenv("ZINK_STATE_PATH")) |path_env| {
-        log_path = path_env;
+        log_path = try allocator.dupe(u8, path_env);
     } else {
         log_path = try std.mem.concat(allocator, u8, &.{ home_env, "/.zink.state" });
-        defer allocator.free(log_path);
     }
 
     // Execute plan
