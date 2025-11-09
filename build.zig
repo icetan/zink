@@ -1,4 +1,5 @@
 const std = @import("std");
+const meta = @import("build.zig.zon");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
@@ -18,6 +19,11 @@ pub fn build(b: *std.Build) void {
         }),
     });
     exe.root_module.addImport("glob", libglob.module("glob"));
+
+    const version = b.option([]const u8, "version", "application version string") orelse meta.version;
+    const options = b.addOptions();
+    options.addOption([]const u8, "version", version);
+    exe.root_module.addOptions("config", options);
 
     b.installArtifact(exe);
 

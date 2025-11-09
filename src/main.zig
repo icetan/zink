@@ -14,6 +14,7 @@ const ExitCodes = enum(u8) {
 };
 
 fn usage() !void {
+    const version = @import("config").version;
     var args = std.process.args();
     const pname = args.next().?;
     std.log.info(
@@ -32,7 +33,8 @@ fn usage() !void {
         \\  ZINK_PATH           Manifest files to apply, delimit with ':' (default: ~/.zink)
         \\  ZINK_STATE_PATH     State file to use (default: ~/.zink.log)
         \\
-    , .{std.fs.path.basename(pname)});
+        \\Version: {s}
+    , .{ std.fs.path.basename(pname), version });
 }
 
 const ErrFlags = struct {
